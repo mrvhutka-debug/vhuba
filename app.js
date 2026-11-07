@@ -883,10 +883,9 @@ async function addRoom() {
       alert(t.added);
     }
   } catch (e) {
-    alert(t.errGeneric);
+    alert(t.errGeneric + " (" + (e.code || e.message) + ")");
   }
   $("addBtn").disabled = false;
-}
 
 async function deleteRoom(id) {
   if (!confirm(T[lang].confirmDel)) return;
