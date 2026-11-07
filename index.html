@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vhuba</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>Vhuba</header>
+
+<div id="loading">Loading...</div>
+
+<div id="welcomeScreen" class="screen">
+  <div class="wrap"><div class="panel" style="text-align:center">
+    <h2>Welcome to Vhuba</h2>
+    <p>Find a room near you, easily.</p>
+    <button id="wLogin" type="button">Login</button>
+    <button id="wSignup" class="langbtn" type="button">Sign up</button>
+  </div></div>
+</div>
+
+<div id="authScreen" class="screen">
+  <div class="wrap"><div class="panel">
+    <div class="tabs">
+      <button id="tabLogin" class="active" type="button">Login</button>
+      <button id="tabSignup" type="button">Sign up</button>
+    </div>
+    <input id="aName" placeholder="Your name" style="display:none">
+    <input id="aPhone" type="tel" placeholder="Phone number (10 digits)" style="display:none">
+    <input id="aEmail" type="email" placeholder="Email (must be real)">
+    <input id="aPass" type="password" placeholder="Password (min 6 characters)">
+    <div id="aMsg" class="msg"></div>
+    <button id="aBtn" type="button">Login</button>
+    <button id="aBack" class="gray" type="button">Back</button>
+  </div></div>
+</div>
+
+<div id="verifyScreen" class="screen">
+  <div class="wrap"><div class="panel">
+    <h3 class="title">Verify your email</h3>
+    <p>We sent a verification link to:</p>
+    <p><b id="verifyEmail" style="word-break:break-all"></b></p>
+    <p>Open the email (also check Spam), tap the link, then come back here and press the button below.</p>
+    <div id="vMsg" class="msg"></div>
+    <button id="vCheck" type="button">I have verified my email</button>
+    <button id="vResend" class="gray" type="button">Send email again</button>
+    <button id="vLogout" class="gray" type="button">Logout</button>
+  </div></div>
+</div>
+
+<div id="langScreen" class="screen">
+  <div class="wrap"><div class="panel">
+    <h3 class="title" style="text-align:center">Choose your language<br>भाषा चुनें<br>भाषा छान्नुहोस्</h3>
+    <button class="langbtn" data-l="en">English</button>
+    <button class="langbtn" data-l="hi">हिन्दी</button>
+    <button class="langbtn" data-l="ne">नेपाली</button>
+  </div></div>
+</div>
+
+<div id="privacyScreen" class="screen">
+  <div class="wrap"><div class="panel">
+    <h3 class="title" data-i18n="privTitle"></h3>
+    <div class="policy" id="policyText"></div>
+    <label class="check">
+      <input type="checkbox" id="agreeBox">
+      <span data-i18n="agreeCheck"></span>
+    </label>
+    <button id="agreeBtn" disabled data-i18n="agreeBtn"></button>
+    <button class="gray" id="declineBtn" data-i18n="declineBtn"></button>
+  </div></div>
+</div>
+
+<div id="appScreen" class="screen">
+  <div class="nav">
+    <button id="menuBtn" class="navbtn menuicon" type="button">☰</button>
+    <span id="pageTitle" class="pagetitle"></span>
+  </div>
+  <div id="menuOverlay" class="overlay"></div>
+  <div id="sideMenu" class="side">
+    <button class="mrow" id="mHome" data-i18n="navHome"></button>
+    <button class="mrow" id="mFavs" data-i18n="navFavs"></button>
+    <button class="mrow" id="mSettings" data-i18n="navSettings"></button>
+    <button class="mrow" id="mAdmin" style="display:none" data-i18n="navAdmin"></button>
+    <button class="mrow danger" id="mLogout" data-i18n="logout"></button>
+  </div>
+
+  <div id="reportModal" class="modal">
+    <div class="modalbox">
+      <h3 class="title" data-i18n="reportTitle"></h3>
+      <select id="reportReason">
+        <option value="fake" data-i18n="rFake"></option>
+        <option value="rented" data-i18n="rRented"></option>
+        <option value="price" data-i18n="rPrice"></option>
+      </select>
+      <button id="reportSendBtn" class="red" data-i18n="reportSend"></button>
+      <button id="reportCancel" class="gray" data-i18n="cancel"></button>
+    </div>
+  </div>
+
+  <div id="bigModal" class="bigmodal">
+    <img id="bigImg" alt="">
+    <button id="bigClose" type="button" data-i18n="closeBtn"></button>
+  </div>
+
+  <div id="homeView" class="box">
+    <p id="hello" style="margin:0 0 14px 0;font-weight:bold"></p>
+    <h3 class="title" data-i18n="homeAsk"></h3>
+    <button id="goFind" class="bigbtn" type="button">
+      <span data-i18n="btnFind"></span>
+      <small data-i18n="btnFindSub"></small>
+      <span id="newBadge" class="badge" style="display:none"></span>
+    </button>
+    <button id="goMine" class="bigbtn give" type="button">
+      <span data-i18n="btnGive"></span>
+      <small data-i18n="btnGiveSub"></small>
+    </button>
+  </div>
+
+  <div id="findView" style="display:none">
+    <div class="box">
+      <button id="backFind" class="gray backbtn" type="button">←</button>
+      <div class="tip" data-i18n="tipSafety"></div>
+
+      <div class="ssbox">
+        <div class="sshead" data-i18n="ssTitle"></div>
+        <div id="ssText" class="sstext"></div>
+        <button id="ssSave" class="act" type="button" data-i18n="ssSave"></button>
+        <button id="ssApply" class="act gray" type="button" data-i18n="ssApply"></button>
+        <button id="ssClear" class="act red" type="button" data-i18n="ssClear"></button>
+      </div>
+
+      <input id="search" data-ph="searchPh">
+      <select id="typeFilter">
+        <option value="" data-i18n="allTypes"></option>
+        <option value="single" data-i18n="single"></option>
+        <option value="shared" data-i18n="shared"></option>
+        <option value="bhk" data-i18n="bhk"></option>
+      </select>
+      <select id="locFilter">
+        <option value="" data-i18n="anyLoc"></option>
+        <option value="highway" data-i18n="highway"></option>
+        <option value="gali" data-i18n="gali"></option>
+      </select>
+      <select id="budgetFilter">
+        <option value="" data-i18n="anyBudget"></option>
+        <option value="3000" data-upto="3,000"></option>
+        <option value="3500" data-upto="3,500"></option>
+        <option value="4000" data-upto="4,000"></option>
+        <option value="5000" data-upto="5,000"></option>
+      </select>
+      <select id="depFilter">
+        <option value="" data-i18n="depAny"></option>
+        <option value="none" data-i18n="depNone"></option>
+        <option value="5000" data-depupto="5,000"></option>
+        <option value="10000" data-depupto="10,000"></option>
+      </select>
+      <select id="exFilter">
+        <option value="" data-i18n="exAny"></option>
+        <option value="incl" data-i18n="exInclOnly"></option>
+      </select>
+      <select id="ownFilter">
+        <option value="" data-i18n="ownAny"></option>
+        <option value="owner" data-i18n="ownOnly"></option>
+      </select>
+      <select id="sortBy">
+        <option value="new" data-i18n="sNew"></option>
+        <option value="near" data-i18n="sNear"></option>
+        <option value="low" data-i18n="sLow"></option>
+        <option value="high" data-i18n="sHigh"></option>
+      </select>
+    </div>
+    <div id="list"></div>
+  </div>
+
+  <div id="favsView" style="display:none">
+    <div class="box">
+      <button id="backFavs" class="gray backbtn" type="button">←</button>
+    </div>
+    <div id="favList"></div>
+  </div>
+
+  <div id="mineView" class="box" style="display:none">
+    <button id="backMine" class="gray backbtn" type="button">←</button>
+    <h3 class="title" data-i18n="addTitle"></h3>
+    <input id="title" data-ph="roomName">
+    <input id="area" data-ph="area">
+    <select id="loc">
+      <option value="highway" data-i18n="highway"></option>
+      <option value="gali" data-i18n="gali"></option>
+    </select>
+    <input id="price" type="number" data-ph="rentPh">
+    <input id="deposit" type="number" data-ph="depositPh">
+    <select id="extras">
+      <option value="" data-i18n="exPick"></option>
+      <option value="exIncl" data-i18n="exIncl"></option>
+      <option value="exElec" data-i18n="exElec"></option>
+      <option value="exBoth" data-i18n="exBoth"></option>
+      <option value="exOther" data-i18n="exOther"></option>
+    </select>
+    <select id="type">
+      <option value="single" data-i18n="single"></option>
+      <option value="shared" data-i18n="shared"></option>
+      <option value="bhk" data-i18n="bhk"></option>
+    </select>
+    <select id="ownerType">
+      <option value="" data-i18n="ownerPick"></option>
+      <option value="owner" data-i18n="oOwner"></option>
+      <option value="broker" data-i18n="oBroker"></option>
+    </select>
+    <select id="cc">
+      <option value="91">India (+91)</option>
+      <option value="977">Nepal (+977)</option>
+    </select>
+    <input id="phone" type="tel" data-ph="phonePh">
+
+    <label class="lbl" data-i18n="photosLabel"></label>
+    <input id="photos" type="file" accept="image/*" multiple>
+    <div id="photoPrev" class="phs"></div>
+
+    <button id="locBtn" class="gray" type="button" data-i18n="locBtn"></button>
+    <button id="locClear" class="gray" type="button" style="display:none" data-i18n="locClear"></button>
+    <div id="locInfo" class="hint" style="padding:0 0 10px 0"></div>
+
+    <button id="addBtn" data-i18n="addBtn"></button>
+
+    <h3 class="title" style="margin-top:20px" data-i18n="mineTitle"></h3>
+    <div id="myList"></div>
+  </div>
+
+  <div id="settingsView" class="box" style="display:none">
+    <button id="backHome" class="gray backbtn" type="button">←</button>
+    <h3 class="title" data-i18n="setTitle"></h3>
+
+    <div class="sec" data-i18n="secAccount"></div>
+    <div class="group">
+      <button class="row" data-sub="subName" data-i18n="rowName"></button>
+      <div class="sub" id="subName">
+        <input id="newName" data-ph="namePh">
+        <button id="saveName" data-i18n="save"></button>
+      </div>
+      <button class="row" data-sub="subPhone" data-i18n="rowPhone"></button>
+      <div class="sub" id="subPhone">
+        <input id="newPhone" type="tel" data-ph="phonePh">
+        <button id="savePhone" data-i18n="save"></button>
+      </div>
+      <button class="row" data-sub="subPass" data-i18n="rowPass"></button>
+      <div class="sub" id="subPass">
+        <input id="curPass" type="password" data-ph="curPassPh">
+        <input id="newPass" type="password" data-ph="newPassPh">
+        <button id="savePass" data-i18n="save"></button>
+      </div>
+      <button class="row danger" data-sub="subDelete" data-i18n="rowDelete"></button>
+      <div class="sub" id="subDelete">
+        <p data-i18n="delWarn"></p>
+        <input id="delPass" type="password" data-ph="curPassPh">
+        <button class="red" id="delBtn" data-i18n="delBtn"></button>
+      </div>
+    </div>
+
+    <div class="sec" data-i18n="secLang"></div>
+    <div class="group">
+      <div class="rowline">
+        <span data-i18n="rowLang"></span>
+        <select id="lang">
+          <option value="en">English</option>
+          <option value="hi">हिन्दी</option>
+          <option value="ne">नेपाली</option>
+        </select>
+      </div>
+      <label class="rowline">
+        <span data-i18n="darkLabel"></span>
+        <input type="checkbox" id="darkBox">
+      </label>
+    </div>
+
+    <div class="sec" data-i18n="secPrivacy"></div>
+    <div class="group">
+      <label class="rowline">
+        <span data-i18n="hideLabel"></span>
+        <input type="checkbox" id="hideBox">
+      </label>
+      <p class="hint" data-i18n="hideNote"></p>
+    </div>
+
+    <div class="sec" data-i18n="secHelp"></div>
+    <div class="group">
+      <button class="row" data-sub="subPolicy" data-i18n="rowPolicy"></button>
+      <div class="sub" id="subPolicy"><div class="policy" id="policyText2"></div></div>
+      <button class="row" data-sub="subReport" data-i18n="rowReport"></button>
+      <div class="sub" id="subReport">
+        <textarea id="reportText" data-ph="reportPh"></textarea>
+        <button id="sendReport" data-i18n="reportBtn"></button>
+      </div>
+      <div id="supBox"></div>
+      <p class="hint" id="myUidText" style="padding-top:10px;word-break:break-all"></p>
+      <button class="row danger" id="logoutBtn" data-i18n="logout"></button>
+    </div>
+  </div>
+
+  <div id="adminView" class="box" style="display:none">
+    <button id="backAdmin" class="gray backbtn" type="button">←</button>
+    <button id="adminRefresh" class="act gray" type="button">Refresh</button>
+    <div id="adminList"></div>
+  </div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
