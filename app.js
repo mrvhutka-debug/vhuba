@@ -1,7 +1,7 @@
 import {
   auth, db, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged,
   sendEmailVerification, doc, getDoc, setDoc, updateDoc, collection, addDoc, deleteDoc, getDocs, where,
-  onSnapshot, query, orderBy, limit, serverTimestamp
+  onSnapshot, query, orderBy, limit, serverTimestamp, writeBatch
 } from "./firebase.js";
 import en from "./en.js";
 import hi from "./hi.js";
@@ -13,8 +13,8 @@ import { initAdmin } from "./admin.js";
 /* Vhuba support contact. Fill these two lines with your own details.
    SUPPORT_WA: country code + number, no plus or spaces, e.g. "9779812345678"
    SUPPORT_EMAIL: your support email. Leave "" to hide a button. */
-const SUPPORT_WA = "";
-const SUPPORT_EMAIL = "";
+const SUPPORT_WA = "9816465825";
+const SUPPORT_EMAIL = "mrvhutka@gmail.com";
 
 const T = {
   en: Object.assign({}, en, X.en),
@@ -851,7 +851,7 @@ async function addRoom() {
     title: title, area: area, loc: loc, country: country, currency: CUR[country],
     price: price, deposit: deposit, extras: extras,
     ownerType: ownerType, type: type, cc: cc, phone: hide ? "" : phone,
-    status: "available", reportCount: 0, reportedBy: [],
+    status: "available", reportCount: 0,
     uid: auth.currentUser.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
   };
   if (pendingPhotos.length) data.photos = pendingPhotos.slice(0, MAX_PHOTOS);
@@ -886,6 +886,7 @@ async function addRoom() {
     alert(t.errGeneric + " (" + (e.code || e.message) + ")");
   }
   $("addBtn").disabled = false;
+}
 
 async function deleteRoom(id) {
   if (!confirm(T[lang].confirmDel)) return;
@@ -913,12 +914,19 @@ async function renewRoom(id) {
   }
 }
 /* ---------- REPORT ---------- */
-function openReport(id) {
+async function openReport(id) {
   const r = roomsData.find((x) => x.id === id);
-  if (!r) return;
-  const uid = auth.currentUser.uid;
-  if ((r.reportedBy || []).indexOf(uid) !== -1) { alert(T[lang].alreadyReported); return; }
+  if (!r || !auth.currentUser) return;
+  try {
+    const s = await getDoc(doc(db, "reports", id + "_" + auth.currentUser.uid));
+    if (s.exists()) { alert(T[lang].alreadyReported); return; }
+  } catch (e) {
+    alert(T[lang].errGeneric + " (" + (e.code || e.message) + ")");
+    return;
+  }
   reportingId = id;
+  $("reportReason").value = "";
+  $("reportDetails").value = "";
   $("reportModal").classList.add("open");
 }
 
@@ -928,29 +936,32 @@ function closeReport() {
 }
 
 async function sendReport() {
+  const t = T[lang];
   const id = reportingId;
   const r = roomsData.find((x) => x.id === id);
   if (!id || !r) { closeReport(); return; }
   const uid = auth.currentUser.uid;
   const reason = $("reportReason").value;
+  const details = $("reportDetails").value.trim().slice(0, 1000);
+
+  if (!reason) { alert(t.needReason); return; }
+  if (reason === "other" && details.length < 5) { alert(t.needDetails); return; }
 
   $("reportSendBtn").disabled = true;
   try {
-    await updateDoc(doc(db, "rooms", id), {
-      reportCount: (r.reportCount || 0) + 1,
-      reportedBy: (r.reportedBy || []).concat([uid])
+    const batch = writeBatch(db);
+    batch.set(doc(db, "reports", id + "_" + uid), {
+      type: "room", roomId: id, ownerId: r.uid, uid: uid,
+      reason: reason, details: details, status: "new", createdAt: serverTimestamp()
     });
-    try {
-      await addDoc(collection(db, "reports"), {
-        type: "room", roomId: id, reason: reason, uid: uid, createdAt: serverTimestamp()
-      });
-    } catch (e) {}
-    alert(T[lang].reportRoomDone);
+    batch.update(doc(db, "rooms", id), { reportCount: (r.reportCount || 0) + 1 });
+    await batch.commit();
+    alert(t.reportRoomDone);
+    closeReport();
   } catch (e) {
-    alert(T[lang].errGeneric);
+    alert(t.errGeneric + " (" + (e.code || e.message) + ")");
   }
   $("reportSendBtn").disabled = false;
-  closeReport();
 }
 
 function listClick(e) {

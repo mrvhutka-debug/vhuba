@@ -2,6 +2,18 @@ import {
   db, collection, getDocs, getDoc, doc, query, orderBy, limit, updateDoc, deleteDoc, setDoc, writeBatch
 } from "./firebase.js";
 
+const REASONS = {
+  fake_room: "Fake room or property",
+  wrong_info: "Incorrect information",
+  fake_photos: "Fake photos",
+  wrong_contact: "Incorrect contact details",
+  suspicious: "Suspicious activity",
+  other: "Other",
+  fake: "Fake or scam (old report)",
+  rented: "Already rented (old report)",
+  price: "Wrong price or hidden charges (old report)"
+};
+
 export function initAdmin(c) {
   const $ = c.$;
   const esc = c.esc;
@@ -16,20 +28,27 @@ export function initAdmin(c) {
       snap.docs.forEach((d) => {
         const r = d.data();
         const id = esc(d.id);
+        const when = (r.createdAt && r.createdAt.toDate) ? r.createdAt.toDate().toLocaleString() : "";
         if (r.type === "room") {
           const room = rooms.find((x) => x.id === r.roomId);
           const title = room ? room.title : "(room not in latest list)";
           const cnt = room ? (room.reportCount || 0) : "?";
           const rid = esc(r.roomId || "");
           html += '<div class="card"><h3>' + esc(title) + '</h3>' +
-            '<p>Reason: <b>' + esc(r.reason || "") + '</b> · Reports on room: ' + esc(String(cnt)) + '</p>' +
+            '<p>Reason: <b>' + esc(REASONS[r.reason] || r.reason || "") + '</b></p>' +
+            (r.details ? '<p>Details: ' + esc(r.details) + '</p>' : '') +
+            '<p>Status: <b>' + esc(r.status || "new") + '</b> · Reports on room: ' + esc(String(cnt)) + '</p>' +
+            '<p class="mini">When: ' + esc(when) + '</p>' +
             '<p class="mini">Room ID: ' + rid + '</p>' +
+            '<p class="mini">Owner ID: ' + esc(r.ownerId || "") + '</p>' +
+            '<p class="mini">Reporter ID: ' + esc(r.uid || "") + '</p>' +
             '<button class="act" data-a="restore" data-rid="' + rid + '" data-id="' + id + '">Restore room (clear reports)</button>' +
             '<button class="act" data-a="verify" data-rid="' + rid + '" data-id="' + id + '">Verify this owner</button>' +
             '<button class="del" data-a="delroom" data-rid="' + rid + '" data-id="' + id + '">Delete room</button>' +
             '<button class="act gray" data-a="dismiss" data-id="' + id + '">Dismiss report</button></div>';
         } else {
           html += '<div class="card"><h3>Problem report</h3><p>' + esc(r.text || "") + '</p>' +
+            '<p class="mini">When: ' + esc(when) + '</p>' +
             '<p class="mini">User ID: ' + esc(r.uid || "") + '</p>' +
             '<button class="act gray" data-a="dismiss" data-id="' + id + '">Dismiss</button></div>';
         }
@@ -47,7 +66,7 @@ export function initAdmin(c) {
     const rid = e.target.getAttribute("data-rid");
     try {
       if (a === "restore") {
-        await updateDoc(doc(db, "rooms", rid), { reportCount: 0, reportedBy: [] });
+        await updateDoc(doc(db, "rooms", rid), { reportCount: 0 });
       } else if (a === "delroom") {
         if (!confirm("Delete this room?")) return;
         await deleteDoc(doc(db, "rooms", rid));
@@ -69,17 +88,25 @@ export function initAdmin(c) {
   $("adminRefresh").addEventListener("click", load);
 
   $("adminFix").addEventListener("click", async () => {
-    const old = c.getRooms().filter((r) => !(r.country === "IN" || r.country === "NP") || !r.currency);
-    if (!old.length) { alert("All rooms already have country and currency."); return; }
-    if (!confirm("Add country and currency to " + old.length + " old rooms?")) return;
+    const upd = {};
+    c.getRooms().forEach((r) => {
+      const u = {};
+      if (!(r.country === "IN" || r.country === "NP") || !r.currency) {
+        const country = String(r.cc || "").replace(/\D/g, "") === "977" ? "NP" : "IN";
+        u.country = country;
+        u.currency = country === "IN" ? "INR" : "NPR";
+      }
+      if (Array.isArray(r.reportedBy) && r.reportedBy.length) u.reportedBy = [];
+      if (Object.keys(u).length) upd[r.id] = u;
+    });
+    const ids = Object.keys(upd);
+    if (!ids.length) { alert("All rooms are already up to date."); return; }
+    if (!confirm("Update " + ids.length + " old rooms?")) return;
     try {
       const batch = writeBatch(db);
-      old.forEach((r) => {
-        const country = String(r.cc || "").replace(/\D/g, "") === "977" ? "NP" : "IN";
-        batch.update(doc(db, "rooms", r.id), { country: country, currency: country === "IN" ? "INR" : "NPR" });
-      });
+      ids.forEach((id) => batch.update(doc(db, "rooms", id), upd[id]));
       await batch.commit();
-      alert("Done. " + old.length + " rooms updated.");
+      alert("Done. " + ids.length + " rooms updated.");
     } catch (err) {
       alert("Failed. Are you an admin?");
     }

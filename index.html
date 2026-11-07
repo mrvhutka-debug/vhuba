@@ -89,10 +89,15 @@
     <div class="modalbox">
       <h3 class="title" data-i18n="reportTitle"></h3>
       <select id="reportReason">
-        <option value="fake" data-i18n="rFake"></option>
-        <option value="rented" data-i18n="rRented"></option>
-        <option value="price" data-i18n="rPrice"></option>
+        <option value="" data-i18n="rChoose"></option>
+        <option value="fake_room" data-i18n="rFakeRoom"></option>
+        <option value="wrong_info" data-i18n="rWrongInfo"></option>
+        <option value="fake_photos" data-i18n="rFakePhotos"></option>
+        <option value="wrong_contact" data-i18n="rWrongContact"></option>
+        <option value="suspicious" data-i18n="rSuspicious"></option>
+        <option value="other" data-i18n="rOther"></option>
       </select>
+      <textarea id="reportDetails" maxlength="1000" data-ph="reportDetailsPh"></textarea>
       <button id="reportSendBtn" class="red" data-i18n="reportSend"></button>
       <button id="reportCancel" class="gray" data-i18n="cancel"></button>
     </div>
@@ -305,7 +310,7 @@
   <div id="adminView" class="box" style="display:none">
     <button id="backAdmin" class="gray backbtn" type="button">←</button>
     <button id="adminRefresh" class="act gray" type="button">Refresh</button>
-    <button id="adminFix" class="act" type="button">Fix currency on old rooms</button>
+    <button id="adminFix" class="act" type="button">Fix old rooms (currency + privacy)</button>
     <div id="adminList"></div>
   </div>
 </div>
