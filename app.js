@@ -13,14 +13,30 @@ import { initAdmin } from "./admin.js";
 /* Vhuba support contact. Fill these two lines with your own details.
    SUPPORT_WA: country code + number, no plus or spaces, e.g. "9779812345678"
    SUPPORT_EMAIL: your support email. Leave "" to hide a button. */
-const SUPPORT_WA = "9816465825";
-const SUPPORT_EMAIL = "mrvhutka@gmail.com";
+const SUPPORT_WA = "";
+const SUPPORT_EMAIL = "";
 
 const T = {
   en: Object.assign({}, en, X.en),
   hi: Object.assign({}, hi, X.hi),
   ne: Object.assign({}, ne, X.ne)
 };
+
+const X2 = {
+  en: {
+    descPh: "Description (optional): facilities, rules, nearby places...",
+    stAdminHidden: "Hidden by Vhuba admin"
+  },
+  hi: {
+    descPh: "विवरण (वैकल्पिक): सुविधाएँ, नियम, आस-पास की जगहें...",
+    stAdminHidden: "Vhuba एडमिन ने छुपाया"
+  },
+  ne: {
+    descPh: "विवरण (ऐच्छिक): सुविधा, नियम, नजिकका ठाउँ...",
+    stAdminHidden: "Vhuba एडमिनले लुकाएको"
+  }
+};
+["en", "hi", "ne"].forEach((l) => Object.assign(T[l], X2[l]));
 
 const TITLE_KEY = { home: "navHome", find: "navFind", favs: "navFavs", mine: "navMine", settings: "navSettings", admin: "navAdmin" };
 const VIEWS = ["home", "find", "favs", "mine", "settings", "admin"];
@@ -107,6 +123,7 @@ function uref() {
 }
 
 function showView(v) {
+  if (v === "admin" && !isAdmin) return;
   currentView = v;
   VIEWS.forEach((n) => { $(n + "View").style.display = (n === v) ? "block" : "none"; });
   $("pageTitle").textContent = T[lang][TITLE_KEY[v]];
@@ -140,6 +157,22 @@ function authError(code) {
   return map[code] || "Something went wrong. Please try again.";
 }
 
+/* Keep the account email and its verified status on the user's profile, so admins can see them.
+   The rules only accept values that match the real login. */
+async function syncAuthFields() {
+  const u = auth.currentUser;
+  if (!u || !profile) return;
+  const upd = {};
+  if (profile.email !== u.email) upd.email = u.email || "";
+  const ev = !!u.emailVerified;
+  if (profile.emailVerified !== ev) upd.emailVerified = ev;
+  if (!Object.keys(upd).length) return;
+  try {
+    await updateDoc(uref(), upd);
+    Object.assign(profile, upd);
+  } catch (e) {}
+}
+
 /* ---------- AUTH ---------- */
 function setTab(t) {
   tab = t;
@@ -170,7 +203,10 @@ async function doAuth() {
       signingUp = true;
       const cred = await createUserWithEmailAndPassword(auth, email, pass);
       try { await sendEmailVerification(cred.user); } catch (e) {}
-      profile = { name: name, phone: phone, lang: "", accepted: false, hidePhone: false, favs: [], lastSeen: Date.now() };
+      profile = {
+        name: name, phone: phone, email: cred.user.email || "", emailVerified: false,
+        lang: "", accepted: false, hidePhone: false, favs: [], lastSeen: Date.now()
+      };
       await setDoc(doc(db, "users", cred.user.uid), profile);
       signingUp = false;
       $("aPass").value = "";
@@ -206,6 +242,7 @@ async function checkVerified() {
     await auth.currentUser.getIdToken(true);
     if (auth.currentUser.emailVerified) {
       $("vMsg").textContent = "";
+      await syncAuthFields();
       route();
     } else {
       $("vMsg").textContent = "Not verified yet. Open the link in the email first, then press this button again.";
@@ -245,7 +282,12 @@ const settings = initSettings({
 const admin = initAdmin({
   $: $,
   esc: esc,
-  getRooms: () => roomsData
+  getRooms: () => roomsData,
+  getUid: () => auth.currentUser.uid,
+  country: roomCountry,
+  fmt: (r) => money(r.price, CUR[roomCountry(r)]),
+  fmtDep: (r) => (r.deposit === undefined || r.deposit === null)
+    ? "not given" : (Number(r.deposit) > 0 ? money(r.deposit, CUR[roomCountry(r)]) : "No deposit")
 });
 
 /* ---------- ROUTER ---------- */
@@ -292,9 +334,13 @@ onAuthStateChanged(auth, async (user) => {
     if (snap.exists()) {
       profile = snap.data();
     } else {
-      profile = { name: user.email, phone: "", lang: "", accepted: false, hidePhone: false, favs: [], lastSeen: Date.now() };
+      profile = {
+        name: user.email, phone: "", email: user.email || "", emailVerified: false,
+        lang: "", accepted: false, hidePhone: false, favs: [], lastSeen: Date.now()
+      };
       await setDoc(ref, profile);
     }
+    await syncAuthFields();
     try {
       await getDocs(query(collection(db, "reports"), limit(1)));
       isAdmin = true;
@@ -418,7 +464,7 @@ function daysLeft(r) {
 function isExpired(r) { return daysLeft(r) <= 0; }
 function isReported(r) { return (r.reportCount || 0) >= REPORT_LIMIT; }
 function isRented(r) { return r.status === "rented"; }
-function isLive(r) { return !isRented(r) && !isExpired(r) && !isReported(r); }
+function isLive(r) { return !isRented(r) && !isExpired(r) && !isReported(r) && !r.hidden; }
 function hasLoc(r) { return typeof r.lat === "number" && typeof r.lng === "number"; }
 
 /* ---------- LOCATION ---------- */
@@ -716,11 +762,12 @@ function cardTop(r, t) {
   const dep = (r.deposit === undefined || r.deposit === null) ? '' :
     '<p>' + esc(t.depositLabel) + ': ' +
     (Number(r.deposit) > 0 ? esc(money(r.deposit, cur)) : esc(t.noDeposit)) + '</p>';
+  const desc = r.description ? '<p>' + esc(r.description) + '</p>' : '';
   return '<h3>' + esc(r.title || "") + '</h3>' +
     '<span class="tag">' + esc(t[r.type] || "") + '</span>' +
     '<span class="tag">' + esc(t[r.loc] || "") + '</span>' + ctTag + exTag + ownTag + verTag + distTag +
     '<p>' + esc(t.areaLabel) + ': ' + esc(r.area || "") + '</p>' +
-    '<p class="price">' + esc(money(r.price, cur)) + ' ' + esc(t.perMonth) + '</p>' + dep +
+    '<p class="price">' + esc(money(r.price, cur)) + ' ' + esc(t.perMonth) + '</p>' + dep + desc +
     photosHtml(r);
 }
 
@@ -806,7 +853,9 @@ function render() {
     const id = esc(r.id);
     let badge = "";
     let btns = "";
-    if (isReported(r)) {
+    if (r.hidden) {
+      badge = '<span class="tag bad">' + esc(t.stAdminHidden) + '</span>';
+    } else if (isReported(r)) {
       badge = '<span class="tag bad">' + esc(t.stHidden) + '</span>';
     } else if (isRented(r)) {
       badge = '<span class="tag bad">' + esc(t.stRented) + '</span>';
@@ -837,6 +886,7 @@ async function addRoom() {
   const deposit = $("deposit").value.trim() === "" ? 0 : Number($("deposit").value);
   const extras = $("extras").value;
   const ownerType = $("ownerType").value;
+  const desc = $("desc").value.trim().slice(0, 500);
   const type = $("type").value;
   const cc = $("cc").value;
   const phone = $("phone").value.trim();
@@ -854,6 +904,7 @@ async function addRoom() {
     status: "available", reportCount: 0,
     uid: auth.currentUser.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
   };
+  if (desc) data.description = desc;
   if (pendingPhotos.length) data.photos = pendingPhotos.slice(0, MAX_PHOTOS);
   if (pendingLoc) { data.lat = pendingLoc.lat; data.lng = pendingLoc.lng; }
 
@@ -876,6 +927,7 @@ async function addRoom() {
       $("deposit").value = "";
       $("extras").value = "";
       $("ownerType").value = "";
+      $("desc").value = "";
       $("photos").value = "";
       pendingPhotos = [];
       showPreviews();

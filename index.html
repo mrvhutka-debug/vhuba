@@ -217,6 +217,7 @@
       <option value="owner" data-i18n="oOwner"></option>
       <option value="broker" data-i18n="oBroker"></option>
     </select>
+    <textarea id="desc" maxlength="500" data-ph="descPh"></textarea>
     <select id="cc">
       <option value="91">India (+91)</option>
       <option value="977">Nepal (+977)</option>
@@ -310,6 +311,14 @@
   <div id="adminView" class="box" style="display:none">
     <button id="backAdmin" class="gray backbtn" type="button">←</button>
     <button id="adminRefresh" class="act gray" type="button">Refresh</button>
+    <select id="adminStatus">
+      <option value="new">New reports</option>
+      <option value="reviewed">Reviewed</option>
+      <option value="resolved">Resolved</option>
+      <option value="rejected">Rejected</option>
+      <option value="all">All reports</option>
+    </select>
+    <p id="adminSummary" class="mini"></p>
     <button id="adminFix" class="act" type="button">Fix old rooms (currency + privacy)</button>
     <div id="adminList"></div>
   </div>
