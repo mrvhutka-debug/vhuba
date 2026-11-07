@@ -29,7 +29,10 @@ const LIFE_DAYS = 30;
 const REPORT_LIMIT = 3;
 const MAX_PHOTOS = 2;
 const MAX_ROOMS = 5;
-const EMPTY_F = { q: "", type: "", loc: "", budget: "", dep: "", ex: "", own: "", sort: "new" };
+const CUR = { IN: "INR", NP: "NPR" };
+const BUDGETS = { IN: [3000, 3500, 4000, 5000], NP: [5000, 8000, 10000, 15000] };
+const DEPOSITS = { IN: [5000, 10000], NP: [8000, 16000] };
+const EMPTY_F = { q: "", type: "", loc: "", country: "", budget: "", dep: "", ex: "", own: "", sort: "new" };
 const PHOTO_OK = /^data:image\/jpeg;base64,[A-Za-z0-9+\/=]+$/;
 
 let lang = "en";
@@ -37,7 +40,6 @@ let tab = "login";
 let profile = null;
 let signingUp = false;
 let isAdmin = false;
-let adminNote = "";
 let resendBusy = false;
 let currentView = "home";
 let roomsData = [];
@@ -61,6 +63,18 @@ function esc(t) {
 
 function digits(s) {
   return String(s || "").replace(/\D/g, "");
+}
+
+/* ---------- CURRENCY (decided by the ROOM's country, never by the viewer) ---------- */
+function roomCountry(r) {
+  if (r.country === "IN" || r.country === "NP") return r.country;
+  return digits(r.cc) === "977" ? "NP" : "IN";
+}
+
+function money(n, cur) {
+  const v = Number(n);
+  const s = isFinite(v) ? v.toLocaleString("en-IN") : String(n);
+  return cur === "NPR" ? "NPR " + s : "₹" + s;
 }
 
 function applyTheme(dark) {
@@ -176,7 +190,6 @@ async function doLogout() {
   stopRooms();
   profile = null;
   isAdmin = false;
-  adminNote = "";
   ssAutoDone = false;
   closeReport();
   closeBig();
@@ -270,7 +283,6 @@ onAuthStateChanged(auth, async (user) => {
     stopRooms();
     profile = null;
     isAdmin = false;
-    adminNote = "";
     show("welcomeScreen");
     return;
   }
@@ -286,10 +298,8 @@ onAuthStateChanged(auth, async (user) => {
     try {
       await getDocs(query(collection(db, "reports"), limit(1)));
       isAdmin = true;
-      adminNote = "ADMIN YES";
     } catch (e) {
       isAdmin = false;
-      adminNote = (e.code === "permission-denied") ? "ADMIN NO" : "ERROR " + (e.code || e.message);
     }
     route();
   } catch (e) {
@@ -333,24 +343,63 @@ function setupSupport(t) {
     : '';
 }
 
+/* Price filter options are built per country, so rupees and NPR are never mixed. */
+function buildPriceFilters() {
+  const t = T[lang];
+  const c = $("countryFilter").value;
+  const b = $("budgetFilter");
+  const d = $("depFilter");
+  const bv = b.value;
+  const dv = d.value;
+  let bh = '<option value="">' + esc(t.anyBudget) + '</option>';
+  let dh = '<option value="">' + esc(t.depAny) + '</option>';
+  if (c) {
+    BUDGETS[c].forEach((n) => {
+      bh += '<option value="' + n + '">' + esc(t.upto.replace("{n}", money(n, CUR[c]))) + '</option>';
+    });
+    dh += '<option value="none">' + esc(t.depNone) + '</option>';
+    DEPOSITS[c].forEach((n) => {
+      dh += '<option value="' + n + '">' + esc(t.depUpto.replace("{n}", money(n, CUR[c]))) + '</option>';
+    });
+  }
+  b.innerHTML = bh;
+  d.innerHTML = dh;
+  setSel("budgetFilter", bv);
+  setSel("depFilter", dv);
+  b.disabled = !c;
+  d.disabled = !c;
+  $("priceHint").textContent = c ? "" : t.priceHint;
+  $("priceHint").style.display = c ? "none" : "block";
+}
+
+function setSel(id, v) {
+  const s = $(id);
+  s.value = v;
+  if (s.selectedIndex < 0) s.selectedIndex = 0;
+}
+
+function updateCurrencyUI() {
+  const t = T[lang];
+  const c = $("country").value;
+  const cur = c ? (CUR[c] + (c === "IN" ? " ₹" : "")) : t.chooseCountryFirst;
+  $("price").placeholder = t.rentPh2.replace("{cur}", cur);
+  $("deposit").placeholder = t.depositPh2.replace("{cur}", cur);
+}
+
 function applyLang() {
   const t = T[lang];
   document.documentElement.lang = lang;
   document.querySelectorAll("[data-i18n]").forEach((el) => { el.textContent = t[el.getAttribute("data-i18n")]; });
   document.querySelectorAll("[data-ph]").forEach((el) => { el.placeholder = t[el.getAttribute("data-ph")]; });
-  document.querySelectorAll("[data-upto]").forEach((el) => {
-    el.textContent = t.upto.replace("{n}", el.getAttribute("data-upto"));
-  });
-  document.querySelectorAll("[data-depupto]").forEach((el) => {
-    el.textContent = t.depUpto.replace("{n}", el.getAttribute("data-depupto"));
-  });
   $("policyText").innerHTML = t.privText;
   $("policyText2").innerHTML = t.privText;
   $("lang").value = lang;
-  $("hello").textContent = profile ? (t.hello + profile.name + " | " + adminNote) : "";
+  $("hello").textContent = profile ? (t.hello + profile.name) : "";
   $("pageTitle").textContent = t[TITLE_KEY[currentView]];
   $("myUidText").textContent = auth.currentUser ? (t.myId + ": " + auth.currentUser.uid) : "";
   $("locInfo").textContent = pendingLoc ? t.locGot : "";
+  buildPriceFilters();
+  updateCurrencyUI();
   setupSupport(t);
   render();
 }
@@ -490,12 +539,20 @@ function readFilters() {
     q: $("search").value.trim().toLowerCase(),
     type: $("typeFilter").value,
     loc: $("locFilter").value,
+    country: $("countryFilter").value,
     budget: $("budgetFilter").value,
     dep: $("depFilter").value,
     ex: $("exFilter").value,
     own: $("ownFilter").value,
     sort: $("sortBy").value
   };
+}
+
+/* Old saved searches had no country and used rupees, so they mean India. */
+function normSaved(f) {
+  const g = Object.assign({}, EMPTY_F, f || {});
+  if (!g.country && (g.budget || g.dep)) g.country = "IN";
+  return g;
 }
 
 function matches(r, f) {
@@ -505,6 +562,7 @@ function matches(r, f) {
   }
   if (f.type && r.type !== f.type) return false;
   if (f.loc && r.loc !== f.loc) return false;
+  if (f.country && roomCountry(r) !== f.country) return false;
   if (f.budget && Number(r.price) > Number(f.budget)) return false;
   if (f.dep === "none") {
     if (r.deposit !== 0) return false;
@@ -518,10 +576,11 @@ function matches(r, f) {
 
 function sortRooms(arr, s) {
   const a = arr.slice();
+  const group = (r) => (roomCountry(r) === "IN" ? 0 : 1);
   if (s === "low") {
-    a.sort((x, y) => Number(x.price) - Number(y.price));
+    a.sort((x, y) => (group(x) - group(y)) || (Number(x.price) - Number(y.price)));
   } else if (s === "high") {
-    a.sort((x, y) => Number(y.price) - Number(x.price));
+    a.sort((x, y) => (group(x) - group(y)) || (Number(y.price) - Number(x.price)));
   } else if (s === "near" && myPos) {
     const d = (r) => (hasLoc(r) ? distKm(myPos, r) : 1e9);
     a.sort((x, y) => d(x) - d(y));
@@ -533,12 +592,14 @@ function sortRooms(arr, s) {
 
 function describe(f, t) {
   const p = [];
+  const cur = CUR[f.country || "IN"];
   if (f.q) p.push('"' + f.q + '"');
   if (f.type) p.push(t[f.type]);
   if (f.loc) p.push(t[f.loc]);
-  if (f.budget) p.push(t.upto.replace("{n}", Number(f.budget).toLocaleString("en-US")));
+  if (f.country) p.push(t["ct" + f.country]);
+  if (f.budget) p.push(t.upto.replace("{n}", money(f.budget, cur)));
   if (f.dep === "none") p.push(t.depNone);
-  else if (f.dep) p.push(t.depUpto.replace("{n}", Number(f.dep).toLocaleString("en-US")));
+  else if (f.dep) p.push(t.depUpto.replace("{n}", money(f.dep, cur)));
   if (f.ex === "incl") p.push(t.exInclOnly);
   if (f.own === "owner") p.push(t.ownOnly);
   p.push(t[f.sort === "low" ? "sLow" : f.sort === "high" ? "sHigh" : f.sort === "near" ? "sNear" : "sNew"]);
@@ -546,16 +607,18 @@ function describe(f, t) {
 }
 
 function applySaved() {
-  const f = profile && profile.savedSearch;
-  if (!f) return;
+  if (!(profile && profile.savedSearch)) return;
+  const f = normSaved(profile.savedSearch);
   $("search").value = f.q || "";
-  $("typeFilter").value = f.type || "";
-  $("locFilter").value = f.loc || "";
-  $("budgetFilter").value = f.budget || "";
-  $("depFilter").value = f.dep || "";
-  $("exFilter").value = f.ex || "";
-  $("ownFilter").value = f.own || "";
-  $("sortBy").value = f.sort || "new";
+  setSel("typeFilter", f.type || "");
+  setSel("locFilter", f.loc || "");
+  setSel("countryFilter", f.country || "");
+  buildPriceFilters();
+  setSel("budgetFilter", f.budget || "");
+  setSel("depFilter", f.dep || "");
+  setSel("exFilter", f.ex || "");
+  setSel("ownFilter", f.own || "");
+  setSel("sortBy", f.sort || "new");
   if (f.sort === "near" && !myPos) {
     getPos().then((p) => { myPos = p; render(); }).catch(function () {});
   }
@@ -635,26 +698,29 @@ function startRooms() {
 
 function stopRooms() {
   if (unsubRooms) { unsubRooms(); unsubRooms = null; }
-if (unsubVer) { unsubVer(); unsubVer = null; }
+  if (unsubVer) { unsubVer(); unsubVer = null; }
   verifiedSet = new Set();
   roomsData = [];
 }
 
 function cardTop(r, t) {
+  const c = roomCountry(r);
+  const cur = CUR[c];
   const exTag = (r.extras && t[r.extras]) ? '<span class="tag">' + esc(t[r.extras]) + '</span>' : '';
   const verTag = verifiedSet.has(r.uid) ? '<span class="tag ok">' + esc(t.verified) + '</span>' : '';
   const ownTag = r.ownerType === "owner" ? '<span class="tag">' + esc(t.tagOwner) + '</span>'
     : r.ownerType === "broker" ? '<span class="tag bad">' + esc(t.tagBroker) + '</span>' : '';
+  const ctTag = '<span class="tag">' + esc(t["tag" + c]) + '</span>';
   const distTag = (myPos && hasLoc(r))
     ? '<span class="tag">' + esc(t.kmAway.replace("{n}", distKm(myPos, r).toFixed(1))) + '</span>' : '';
   const dep = (r.deposit === undefined || r.deposit === null) ? '' :
     '<p>' + esc(t.depositLabel) + ': ' +
-    (Number(r.deposit) > 0 ? '₹' + esc(String(r.deposit)) : esc(t.noDeposit)) + '</p>';
+    (Number(r.deposit) > 0 ? esc(money(r.deposit, cur)) : esc(t.noDeposit)) + '</p>';
   return '<h3>' + esc(r.title || "") + '</h3>' +
     '<span class="tag">' + esc(t[r.type] || "") + '</span>' +
-    '<span class="tag">' + esc(t[r.loc] || "") + '</span>' + exTag + ownTag + verTag + distTag +
+    '<span class="tag">' + esc(t[r.loc] || "") + '</span>' + ctTag + exTag + ownTag + verTag + distTag +
     '<p>' + esc(t.areaLabel) + ': ' + esc(r.area || "") + '</p>' +
-    '<p class="price">₹' + esc(String(r.price)) + ' ' + esc(t.perMonth) + '</p>' + dep +
+    '<p class="price">' + esc(money(r.price, cur)) + ' ' + esc(t.perMonth) + '</p>' + dep +
     photosHtml(r);
 }
 
@@ -685,11 +751,11 @@ function render() {
   const favs = (profile && profile.favs) || [];
   const saved = profile && profile.savedSearch;
 
-  $("ssText").textContent = saved ? describe(Object.assign({}, EMPTY_F, saved), t) : t.ssNone;
+  $("ssText").textContent = saved ? describe(normSaved(saved), t) : t.ssNone;
   $("ssApply").style.display = saved ? "block" : "none";
   $("ssClear").style.display = saved ? "block" : "none";
 
-  const base = Object.assign({}, EMPTY_F, saved || {}, { q: "" });
+  const base = Object.assign({}, normSaved(saved || {}), { q: "" });
   const since = (profile && profile.lastSeen) || Date.now();
   const n = roomsData.filter((r) => r.uid !== myUid && isLive(r) && createdMs(r) > since && matches(r, base)).length;
   $("newBadge").textContent = n ? t[saved ? "newMatch" : "newBadge"].replace("{n}", String(n)) : "";
@@ -766,6 +832,7 @@ async function addRoom() {
   const title = $("title").value.trim();
   const area = $("area").value.trim();
   const loc = $("loc").value;
+  const country = $("country").value;
   const price = Number($("price").value);
   const deposit = $("deposit").value.trim() === "" ? 0 : Number($("deposit").value);
   const extras = $("extras").value;
@@ -775,13 +842,14 @@ async function addRoom() {
   const phone = $("phone").value.trim();
   const hide = !!(profile && profile.hidePhone);
 
-  if (!title || !area || !$("price").value.trim() || !extras || !ownerType || (!hide && !phone)) { alert(t.fillAll); return; }
+  if (!title || !area || !country || !$("price").value.trim() || !extras || !ownerType || (!hide && !phone)) { alert(t.fillAll); return; }
   if (!(price > 0)) { alert(t.badPrice); return; }
   if (!(deposit >= 0)) { alert(t.badDeposit); return; }
   if (!hide && !/^[0-9]{10}$/.test(phone)) { alert(t.badPhone); return; }
 
   const data = {
-    title: title, area: area, loc: loc, price: price, deposit: deposit, extras: extras,
+    title: title, area: area, loc: loc, country: country, currency: CUR[country],
+    price: price, deposit: deposit, extras: extras,
     ownerType: ownerType, type: type, cc: cc, phone: hide ? "" : phone,
     status: "available", reportCount: 0, reportedBy: [],
     uid: auth.currentUser.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
@@ -937,6 +1005,18 @@ $("locBtn").addEventListener("click", useMyLocation);
 $("locClear").addEventListener("click", clearLocation);
 $("bigClose").addEventListener("click", closeBig);
 $("bigModal").addEventListener("click", (e) => { if (e.target === $("bigModal")) closeBig(); });
+
+$("country").addEventListener("change", () => {
+  const c = $("country").value;
+  if (c) $("cc").value = (c === "IN") ? "91" : "977";
+  updateCurrencyUI();
+});
+$("countryFilter").addEventListener("change", () => {
+  $("budgetFilter").value = "";
+  $("depFilter").value = "";
+  buildPriceFilters();
+  render();
+});
 
 $("addBtn").addEventListener("click", addRoom);
 $("reportSendBtn").addEventListener("click", sendReport);

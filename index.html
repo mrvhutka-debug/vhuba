@@ -142,18 +142,17 @@
         <option value="highway" data-i18n="highway"></option>
         <option value="gali" data-i18n="gali"></option>
       </select>
+      <select id="countryFilter">
+        <option value="" data-i18n="cAny"></option>
+        <option value="IN" data-i18n="ctIN"></option>
+        <option value="NP" data-i18n="ctNP"></option>
+      </select>
+      <p id="priceHint" style="color:var(--muted);font-size:13px;margin:0 0 10px 0"></p>
       <select id="budgetFilter">
         <option value="" data-i18n="anyBudget"></option>
-        <option value="3000" data-upto="3,000"></option>
-        <option value="3500" data-upto="3,500"></option>
-        <option value="4000" data-upto="4,000"></option>
-        <option value="5000" data-upto="5,000"></option>
       </select>
       <select id="depFilter">
         <option value="" data-i18n="depAny"></option>
-        <option value="none" data-i18n="depNone"></option>
-        <option value="5000" data-depupto="5,000"></option>
-        <option value="10000" data-depupto="10,000"></option>
       </select>
       <select id="exFilter">
         <option value="" data-i18n="exAny"></option>
@@ -189,8 +188,13 @@
       <option value="highway" data-i18n="highway"></option>
       <option value="gali" data-i18n="gali"></option>
     </select>
-    <input id="price" type="number" data-ph="rentPh">
-    <input id="deposit" type="number" data-ph="depositPh">
+    <select id="country">
+      <option value="" data-i18n="countryPick"></option>
+      <option value="IN" data-i18n="ctIN"></option>
+      <option value="NP" data-i18n="ctNP"></option>
+    </select>
+    <input id="price" type="number">
+    <input id="deposit" type="number">
     <select id="extras">
       <option value="" data-i18n="exPick"></option>
       <option value="exIncl" data-i18n="exIncl"></option>
@@ -301,6 +305,7 @@
   <div id="adminView" class="box" style="display:none">
     <button id="backAdmin" class="gray backbtn" type="button">←</button>
     <button id="adminRefresh" class="act gray" type="button">Refresh</button>
+    <button id="adminFix" class="act" type="button">Fix currency on old rooms</button>
     <div id="adminList"></div>
   </div>
 </div>

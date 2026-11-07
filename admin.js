@@ -1,5 +1,5 @@
 import {
-  db, collection, getDocs, getDoc, doc, query, orderBy, limit, updateDoc, deleteDoc, setDoc
+  db, collection, getDocs, getDoc, doc, query, orderBy, limit, updateDoc, deleteDoc, setDoc, writeBatch
 } from "./firebase.js";
 
 export function initAdmin(c) {
@@ -67,6 +67,23 @@ export function initAdmin(c) {
   });
 
   $("adminRefresh").addEventListener("click", load);
+
+  $("adminFix").addEventListener("click", async () => {
+    const old = c.getRooms().filter((r) => !(r.country === "IN" || r.country === "NP") || !r.currency);
+    if (!old.length) { alert("All rooms already have country and currency."); return; }
+    if (!confirm("Add country and currency to " + old.length + " old rooms?")) return;
+    try {
+      const batch = writeBatch(db);
+      old.forEach((r) => {
+        const country = String(r.cc || "").replace(/\D/g, "") === "977" ? "NP" : "IN";
+        batch.update(doc(db, "rooms", r.id), { country: country, currency: country === "IN" ? "INR" : "NPR" });
+      });
+      await batch.commit();
+      alert("Done. " + old.length + " rooms updated.");
+    } catch (err) {
+      alert("Failed. Are you an admin?");
+    }
+  });
 
   return { load };
 }
