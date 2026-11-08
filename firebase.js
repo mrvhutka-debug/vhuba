@@ -2,7 +2,8 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/fireba
 import {
   getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged,
   sendEmailVerification, sendPasswordResetEmail, EmailAuthProvider, reauthenticateWithCredential,
-  updatePassword, deleteUser, GoogleAuthProvider, signInWithPopup, reauthenticateWithPopup
+  updatePassword, deleteUser, GoogleAuthProvider, signInWithPopup, reauthenticateWithPopup,
+  PhoneAuthProvider, RecaptchaVerifier, updatePhoneNumber, linkWithCredential
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, addDoc, getDocs,
@@ -26,6 +27,7 @@ export {
   createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged,
   sendEmailVerification, sendPasswordResetEmail, EmailAuthProvider, reauthenticateWithCredential,
   updatePassword, deleteUser, GoogleAuthProvider, signInWithPopup, reauthenticateWithPopup,
+  PhoneAuthProvider, RecaptchaVerifier, updatePhoneNumber, linkWithCredential,
   doc, getDoc, setDoc, updateDoc, deleteDoc, collection, addDoc, getDocs,
   onSnapshot, query, where, orderBy, limit, serverTimestamp, writeBatch, getCountFromServer
 };

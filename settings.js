@@ -1,14 +1,13 @@
 import {
   auth, db, EmailAuthProvider, reauthenticateWithCredential, reauthenticateWithPopup, GoogleAuthProvider,
   updatePassword, deleteUser,
-  doc, updateDoc, deleteDoc, collection, addDoc, getDocs, query, where, serverTimestamp, writeBatch
+  doc, deleteDoc, collection, addDoc, getDocs, query, where, serverTimestamp
 } from "./firebase.js";
 
 export function initSettings(c) {
   const $ = c.$;
   const t = () => c.T();
   const msg = (k) => alert(t()[k]);
-  const uref = () => doc(db, "users", auth.currentUser.uid);
   const hasPassword = () => !!auth.currentUser && auth.currentUser.providerData.some((p) => p.providerId === "password");
 
   document.querySelectorAll("[data-sub]").forEach((b) => {
@@ -25,14 +24,6 @@ export function initSettings(c) {
     return snap.docs;
   }
 
-  async function setRoomsPhone(phone) {
-    const docs = await myRooms();
-    if (!docs.length) return;
-    const batch = writeBatch(db);
-    docs.forEach((d) => batch.update(d.ref, { phone: phone }));
-    await batch.commit();
-  }
-
   /* Password accounts type their password again. Google accounts confirm with Google again. */
   async function reauth(pass) {
     const u = auth.currentUser;
@@ -42,30 +33,6 @@ export function initSettings(c) {
       await reauthenticateWithPopup(u, new GoogleAuthProvider());
     }
   }
-
-  $("saveName").addEventListener("click", async () => {
-    const name = $("newName").value.trim();
-    if (!name) { msg("fillAll"); return; }
-    try {
-      await updateDoc(uref(), { name: name });
-      c.getProfile().name = name;
-      c.applyLang();
-      msg("saved");
-    } catch (e) { msg("errGeneric"); }
-  });
-
-  $("savePhone").addEventListener("click", async () => {
-    const phone = $("newPhone").value.trim();
-    if (!/^[0-9]{10}$/.test(phone)) { msg("badPhone"); return; }
-    try {
-      await updateDoc(uref(), { phone: phone });
-      const p = c.getProfile();
-      p.phone = phone;
-      if (!p.hidePhone) await setRoomsPhone(phone);
-      $("phone").value = phone;
-      msg("saved");
-    } catch (e) { msg("errGeneric"); }
-  });
 
   $("savePass").addEventListener("click", async () => {
     if (!hasPassword()) return;
@@ -90,9 +57,11 @@ export function initSettings(c) {
     if (!confirm(t().delConfirm)) return;
     try {
       await reauth(pass);
+      const uid = auth.currentUser.uid;
       const docs = await myRooms();
       for (const d of docs) { await deleteDoc(d.ref); }
-      await deleteDoc(uref());
+      try { await deleteDoc(doc(db, "publicProfiles", uid)); } catch (e) {}
+      await deleteDoc(doc(db, "users", uid));
       await deleteUser(auth.currentUser);
       $("delPass").value = "";
     } catch (e) {
@@ -101,25 +70,12 @@ export function initSettings(c) {
     }
   });
 
-  $("lang").addEventListener("change", async function () {
-    const l = this.value;
-    c.setLang(l);
-    try {
-      await updateDoc(uref(), { lang: l });
-      c.getProfile().lang = l;
-    } catch (e) {}
-    c.applyLang();
-  });
-
   $("darkBox").addEventListener("change", function () { c.applyTheme(this.checked); });
 
   $("hideBox").addEventListener("change", async function () {
     const hide = this.checked;
-    const p = c.getProfile();
     try {
-      await updateDoc(uref(), { hidePhone: hide });
-      p.hidePhone = hide;
-      await setRoomsPhone(hide ? "" : (p.phone || ""));
+      await c.applyHide(hide);
     } catch (e) {
       this.checked = !hide;
       msg("errGeneric");
@@ -143,8 +99,6 @@ export function initSettings(c) {
   return {
     sync() {
       const p = c.getProfile();
-      $("newName").value = p.name || "";
-      $("newPhone").value = p.phone || "";
       $("hideBox").checked = !!p.hidePhone;
       $("darkBox").checked = document.documentElement.getAttribute("data-theme") === "dark";
       $("lang").value = c.getLang();

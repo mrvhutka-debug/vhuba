@@ -84,12 +84,13 @@ export function initAdmin(c) {
     const photo = Array.isArray(r.photos) && r.photos.length > 0;
     const email = owner ? (owner.emailVerified === true) : null;
     const name = !!(owner && String(owner.name || "").trim().length >= 2);
+    const phone = owner ? (owner.phoneVerified === true) : null;
     const mark = (ok, txt) => '<p class="mini">' + (ok === null ? "❔" : ok ? "✔" : "✘") + " " + esc(txt) + '</p>';
     return '<div style="' + LINE + '"><b>Checks</b>' +
       mark(photo, "Room photo uploaded (" + (Array.isArray(r.photos) ? r.photos.length : 0) + ")") +
       mark(email, "Owner email verified" + (email === null ? " (unknown)" : "")) +
       mark(name, "Owner name given") +
-      '<p class="mini">⛔ Phone OTP: not available yet</p>' +
+      mark(phone, "Owner verified a phone number by SMS code" + (phone === null ? " (unknown)" : "")) +
       '<p class="mini">Photos are not checked for authenticity. Please look at them yourself.</p></div>';
   }
 
@@ -116,6 +117,8 @@ export function initAdmin(c) {
       '<p>' + esc(c.fmt(r)) + ' / month · ' + esc(r.area || "") + ' · ' + esc(TYPE_L[r.type] || "") + '</p>' +
       '<p class="mini">Owner: ' + esc(owner ? (owner.name || "-") : "(profile not found)") +
       (owner && owner.email ? " · " + esc(owner.email) : "") + '</p>' +
+      '<p class="mini">Phone on the room: ' + esc(r.phone ? ("+" + (r.cc || "") + " " + r.phone) : "hidden by owner") + '</p>' +
+      (r.approvalBy === "auto" ? '<p class="mini">✔ Approved automatically: email, photo, name and an SMS-verified phone (same as the room number) all passed.</p>' : '') +
       (r.approvalReason ? '<p class="mini">Last decision reason: ' + esc(r.approvalReason) + '</p>' : '') +
       (r.hiddenReason ? '<p class="mini">Hide reason: ' + esc(r.hiddenReason) + '</p>' : '') +
       (r.description ? '<p>' + esc(r.description) + '</p>' : '') +
@@ -123,7 +126,8 @@ export function initAdmin(c) {
       '<p class="mini">Room ID: ' + esc(r.id) + '</p><p class="mini">Owner ID: ' + esc(r.uid || "") + '</p>' +
       roomButtons(r, "") + '</div>';
   }
-/* One function does every room decision, so the room, the activity log, the owner notice
+
+  /* One function does every room decision, so the room, the activity log, the owner notice
      and (optionally) the report are always saved together. */
   async function roomAction(rid, action, reportId) {
     const needReason = action !== "approve" && action !== "restore";
@@ -319,14 +323,16 @@ export function initAdmin(c) {
     let h = '<div style="' + LINE + '"><b>Room owner</b>';
     if (o) {
       h += '<p>Name: ' + esc(o.name || "-") + '</p>' +
-        '<p>Profile phone: ' + esc(o.phone || "-") + ' ' + tag("self-entered, not verified") + '</p>' +
+        '<p>Profile phone: ' + esc(o.phone ? ("+" + (o.phoneCc || "") + " " + o.phone) : "-") + '</p>' +
         (room ? '<p>Phone on the room: ' + esc(room.phone ? ("+" + (room.cc || "") + " " + room.phone) : "hidden by owner") + '</p>' : '') +
         '<p>Email: ' + (o.email ? esc(o.email) : '<span class="mini">not saved yet (owner has not logged in since the update)</span>') + '</p>' +
-        '<p>Email verified: ' + (o.emailVerified === true ? tag("Yes", "ok") : o.emailVerified === false ? tag("No", "bad") : '<span class="mini">unknown</span>') + '</p>';
+        '<p>Email verified: ' + (o.emailVerified === true ? tag("Yes", "ok") : o.emailVerified === false ? tag("No", "bad") : '<span class="mini">unknown</span>') + '</p>' +
+        '<p>Phone verified by SMS code: ' + (o.phoneVerified === true ? tag("Yes", "ok") : tag("No", "bad")) + '</p>' +
+        '<p class="mini">Compare the profile phone with the phone on the room. A room approved automatically always shows the verified number.</p>';
     } else {
       h += '<p class="mini">Owner profile not found (account may be deleted).</p>';
     }
-    return h + '<p>Phone verification: ' + tag("not available yet") + '</p><p class="mini">Owner ID: ' + esc(ownerId) + '</p></div>';
+    return h + '<p class="mini">Owner ID: ' + esc(ownerId) + '</p></div>';
   }
 
   function repButtons(rep, room) {
@@ -394,295 +400,3 @@ export function initAdmin(c) {
       box.innerHTML = '<div class="empty">Could not load. Check rules and admin setup.</div>';
     }
   }
-
-  /* Rejecting a report removes it from the room's report count; undoing a reject adds it back. */
-  async function setReportStatus(reportId, newStatus) {
-    const rs = await getDoc(doc(db, "reports", reportId));
-    if (!rs.exists()) throw new Error("report not found");
-    const r = rs.data();
-    const old = r.status || "new";
-    const batch = writeBatch(db);
-    batch.update(doc(db, "reports", reportId), { status: newStatus, reviewedBy: c.getUid(), reviewedAt: serverTimestamp() });
-    if (r.type === "room" && r.roomId && ((old === "rejected") !== (newStatus === "rejected"))) {
-      const rm = await getDoc(doc(db, "rooms", r.roomId));
-      if (rm.exists()) {
-        const n = Number(rm.data().reportCount || 0);
-        batch.update(doc(db, "rooms", r.roomId), { reportCount: newStatus === "rejected" ? Math.max(0, n - 1) : n + 1 });
-      }
-    }
-    batch.set(doc(collection(db, "adminLogs")), logDoc({
-      action: "report_" + newStatus, targetType: "report", targetId: reportId, reason: ""
-    }));
-    await batch.commit();
-  }
-
-  /* ---------- ROOM MANAGEMENT ---------- */
-  async function roomsTab() {
-    body().innerHTML = '<input id="rSearch" placeholder="Search title, owner name or email, area, room ID, owner ID">' +
-      '<select id="rFilter"><option value="pending">Pending</option><option value="needs_review">Needs review</option>' +
-      '<option value="approved">Approved</option><option value="rejected">Rejected</option>' +
-      '<option value="hidden">Hidden by admin</option><option value="none">Old rooms (no status)</option><option value="all">All rooms</option></select>' +
-      '<p id="rCount" class="mini"></p><div id="rList"></div>';
-    $("rSearch").value = rQuery;
-    $("rFilter").value = rFilter;
-    let t = null;
-    $("rSearch").addEventListener("input", () => {
-      clearTimeout(t);
-      t = setTimeout(() => { rQuery = $("rSearch").value; renderRoomsList(); }, 300);
-    });
-    $("rFilter").addEventListener("change", () => { rFilter = $("rFilter").value; renderRoomsList(); });
-    await renderRoomsList();
-  }
-
-  async function renderRoomsList() {
-    const box = $("rList");
-    if (!box) return;
-    let list = c.getRooms().slice();
-    list.sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
-    list = list.filter((r) => rFilter === "all" || (rFilter === "hidden" ? !!r.hidden : apOf(r) === rFilter));
-    const uids = Array.from(new Set(list.map((r) => r.uid))).filter((u) => u && !(u in uc)).slice(0, 80);
-    await Promise.all(uids.map(getUser));
-    if (!$("rList")) return;
-    const q = rQuery.trim().toLowerCase();
-    if (q) {
-      list = list.filter((r) => {
-        const o = uc[r.uid] || {};
-        return [r.title, r.area, r.id, r.uid, o.name, o.email].some((x) => String(x || "").toLowerCase().indexOf(q) !== -1);
-      });
-    }
-    $("rCount").textContent = list.length + " rooms" + (list.length > 60 ? " (showing 60)" : "");
-    $("rList").innerHTML = list.slice(0, 60).map((r) => roomCard(r, uc[r.uid])).join("") || '<div class="empty">No rooms found.</div>';
-  }
-
-  function onRooms() {
-    if (current === "rooms" && $("rList")) renderRoomsList();
-  }
-
-  /* ---------- USER MANAGEMENT ---------- */
-  async function usersTab() {
-    body().innerHTML = '<input id="uSearch" placeholder="Search name, email, phone or user ID">' +
-      '<p id="uCount" class="mini"></p><div id="uList"><div class="empty">Loading...</div></div>';
-    $("uSearch").value = uQuery;
-    let t = null;
-    $("uSearch").addEventListener("input", () => {
-      clearTimeout(t);
-      t = setTimeout(() => { uQuery = $("uSearch").value; renderUsers(); }, 300);
-    });
-    try {
-      const s = await getDocs(query(collection(db, "users"), limit(300)));
-      usersAll = s.docs.map((d) => ({ id: d.id, ...d.data() }));
-      usersAll.sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
-    } catch (e) {
-      $("uList").innerHTML = '<div class="empty">Could not load users.</div>';
-      return;
-    }
-    renderUsers();
-  }
-
-  function renderUsers() {
-    const box = $("uList");
-    if (!box) return;
-    const q = uQuery.trim().toLowerCase();
-    const list = usersAll.filter((u) => !q || [u.name, u.email, u.phone, u.id].some((x) => String(x || "").toLowerCase().indexOf(q) !== -1));
-    const ver = c.getVerified();
-    const rooms = c.getRooms();
-    $("uCount").textContent = list.length + " users" + (list.length > 50 ? " (showing 50)" : "") + ". Admins cannot delete accounts from the app; Firebase does not allow it from here.";
-    box.innerHTML = list.slice(0, 50).map((u) => {
-      const isV = ver.has(u.id);
-      const nRooms = rooms.filter((r) => r.uid === u.id).length;
-      return '<div class="card" style="margin:12px 0"><h3 style="padding-right:0">' + esc(u.name || "-") + '</h3>' +
-        (isV ? tag("✔ Verified owner badge", "ok") : "") +
-        (u.emailVerified === true ? tag("email verified", "ok") : u.emailVerified === false ? tag("email NOT verified", "bad") : tag("email status unknown")) +
-        '<p>Email: ' + (u.email ? esc(u.email) : '<span class="mini">not saved yet</span>') + '</p>' +
-        '<p>Phone (self-entered): ' + esc(u.phone || "-") + '</p>' +
-        '<p class="mini">Joined: ' + esc(fts(u.createdAt) || "before tracking started") + '</p>' +
-        '<p class="mini">Last active: ' + esc(fts(u.lastActive) || "unknown") + '</p>' +
-        '<p class="mini">Rooms (in latest list): ' + nRooms + '</p>' +
-        '<p class="mini">User ID: ' + esc(u.id) + '</p>' +
-        '<div style="' + LINE + '">' +
-        (isV ? '<button class="act gray" data-a="uunver" data-uid="' + esc(u.id) + '">Remove verified badge</button>'
-             : '<button class="act" data-a="uver" data-uid="' + esc(u.id) + '">Give verified badge</button>') +
-        '<button class="act gray" data-a="uview" data-uid="' + esc(u.id) + '">View this user\'s rooms</button></div></div>';
-    }).join("") || '<div class="empty">No users found.</div>';
-  }
-
-  /* ---------- ROOM APPROVAL SETTINGS ---------- */
-  async function approvalTab() {
-    const R = collection(db, "rooms");
-    const v = await Promise.all([
-      cnt(query(R, where("approval", "==", "pending"))),
-      cnt(query(R, where("approval", "==", "needs_review"))),
-      cnt(query(R, where("approval", "==", "approved"))),
-      cnt(query(R, where("approval", "==", "rejected")))
-    ]);
-    body().innerHTML =
-      grid([stat("Pending", v[0]), stat("Needs review", v[1]), stat("Approved", v[2]), stat("Rejected", v[3])]) +
-      '<div class="card" style="margin:0 0 12px 0"><h3>How approval works</h3>' +
-      '<p>Every new room starts as <b>Pending</b> and is hidden from other users.</p>' +
-      '<p>A room can be approved automatically only if ALL of these are true, and the database rules (not the app) decide it:</p>' +
-      '<p class="mini">1. Email verified through Firebase<br>2. At least one photo uploaded<br>3. Owner name given<br>4. Phone verified by OTP</p>' +
-      '<p>Status of check 4: <b>' + tag("not available yet", "bad") + '</b>. Until phone OTP login is added, no room can be approved automatically, so <b>an admin approves every room</b> in Room Management.</p>' +
-      '<p class="mini">Even when all checks pass, Vhuba does not claim the photos, phone or identity are genuine. The green tick only means the listed checks passed or an admin approved the room.</p>' +
-      '<p class="mini">Fixed limits (set in code): 5 rooms per user, listing life 30 days, a room hides after 3 reports.</p>' +
-      '<button class="act" data-a="goto" data-tab="rooms" data-filter="pending">Open pending rooms</button></div>' +
-      '<div class="card" style="margin:0"><h3>Fix old rooms</h3>' +
-      '<p class="mini">Gives rooms made before this update an approval status (so other users can see them), adds missing country and currency, and clears old private report data.</p>' +
-      '<button class="act" data-a="fixold">Fix old rooms</button></div>';
-  }
-
-  async function fixOld() {
-    const upd = {};
-    c.getRooms().forEach((r) => {
-      const u = {};
-      if (!r.approval) { u.approval = "approved"; u.approvalBy = "legacy"; }
-      if (!(r.country === "IN" || r.country === "NP") || !r.currency) {
-        const country = String(r.cc || "").replace(/\D/g, "") === "977" ? "NP" : "IN";
-        u.country = country;
-        u.currency = country === "IN" ? "INR" : "NPR";
-      }
-      if (Array.isArray(r.reportedBy) && r.reportedBy.length) u.reportedBy = [];
-      if (Object.keys(u).length) upd[r.id] = u;
-    });
-    const ids = Object.keys(upd);
-    if (!ids.length) { alert("All rooms are already up to date."); return; }
-    if (!confirm("Update " + ids.length + " old rooms?")) return;
-    for (let i = 0; i < ids.length; i += 400) {
-      const batch = writeBatch(db);
-      ids.slice(i, i + 400).forEach((id) => batch.update(doc(db, "rooms", id), upd[id]));
-      await batch.commit();
-    }
-    await setDoc(doc(collection(db, "adminLogs")), logDoc({ action: "fix_old_rooms", targetType: "rooms", targetId: String(ids.length), reason: "" }));
-    alert("Done. " + ids.length + " rooms updated.");
-  }
-
-  /* ---------- SECURITY SETTINGS ---------- */
-  function securityTab() {
-    const u = auth.currentUser;
-    body().innerHTML =
-      '<div class="card" style="margin:0 0 12px 0"><h3>Your admin sign-in</h3>' +
-      '<p>Email: ' + esc(u ? u.email : "") + '</p>' +
-      '<p>Email verified: ' + (u && u.emailVerified ? tag("Yes", "ok") : tag("No", "bad")) + '</p>' +
-      '<p class="mini">UID: ' + esc(u ? u.uid : "") + '</p>' +
-      '<button class="act" data-a="resetpw">Send password reset email to myself</button>' +
-      '<button class="act gray" data-a="signout">Sign out</button></div>' +
-      '<div class="card" style="margin:0"><h3>How admin access is protected</h3>' +
-      '<p>Admin power is checked by the Firestore database rules on every request, using your verified login email. Hiding a button is not what protects the data.</p>' +
-      '<p>A normal user cannot become admin by editing the page, the browser storage or the link. The database refuses admin actions and admin data for them.</p>' +
-      '<p class="mini">To add another admin, the rules file must be edited in the Firebase console. Use a strong, unique password for this email and keep its mailbox secure, because anyone who controls this mailbox controls admin.</p></div>';
-  }
-
-  /* ---------- ADMIN PROFILE AND PREFERENCES ---------- */
-  function profileTab() {
-    const p = c.getProfile() || {};
-    const u = auth.currentUser;
-    body().innerHTML =
-      '<div class="card" style="margin:0 0 12px 0"><h3>Admin profile</h3>' +
-      '<p>Name: ' + esc(p.name || "-") + '</p><p>Email: ' + esc(u ? u.email : "") + '</p>' +
-      '<p class="mini">To change your name, use normal Settings.</p></div>' +
-      '<div class="card" style="margin:0"><h3>Preferences</h3>' +
-      '<p class="mini">Open this section first when I open Admin (saved on this phone only).</p>' +
-      '<select id="pfTab">' +
-      '<option value="overview">Overview and Analytics</option><option value="reports">Report Management</option>' +
-      '<option value="rooms">Room Management</option><option value="users">User Management</option>' +
-      '<option value="approval">Room Approval Settings</option><option value="security">Security Settings</option>' +
-      '<option value="profile">Admin Profile and Preferences</option><option value="activity">Admin Activity History</option></select></div>';
-    let saved = "overview";
-    try { saved = localStorage.getItem("vhubaAdminTab") || "overview"; } catch (e) {}
-    $("pfTab").value = saved;
-    $("pfTab").addEventListener("change", () => {
-      try { localStorage.setItem("vhubaAdminTab", $("pfTab").value); } catch (e) {}
-    });
-  }
-
-  /* ---------- ADMIN ACTIVITY HISTORY ---------- */
-  async function activityTab() {
-    const snap = await getDocs(query(collection(db, "adminLogs"), orderBy("createdAt", "desc"), limit(100)));
-    let h = "";
-    snap.docs.forEach((d) => {
-      const x = d.data();
-      h += '<div class="card" style="margin:12px 0"><p><b>' + esc(x.action || "") + '</b> ' + esc(x.targetType || "") + '</p>' +
-        (x.snapshot && x.snapshot.title ? '<p>' + esc(x.snapshot.title) + '</p>' : '') +
-        (x.reason ? '<p>Reason: ' + esc(x.reason) + '</p>' : '') +
-        '<p class="mini">By: ' + esc(x.adminEmail || x.adminId || "") + '</p>' +
-        '<p class="mini">When: ' + esc(fts(x.createdAt)) + '</p>' +
-        '<p class="mini">Target ID: ' + esc(x.targetId || "") + '</p></div>';
-    });
-    body().innerHTML = h || '<div class="empty">No admin actions yet.</div>';
-  }
-
-  /* ---------- TABS ---------- */
-  const TABS = {
-    overview: overview, reports: reportsTab, rooms: roomsTab, users: usersTab,
-    approval: approvalTab, security: securityTab, profile: profileTab, activity: activityTab
-  };
-
-  async function load() {
-    if (!c.isAdmin()) return;
-    $("adminTab").value = current;
-    body().innerHTML = '<div class="empty">Loading...</div>';
-    try {
-      await TABS[current]();
-    } catch (e) {
-      body().innerHTML = '<div class="empty">Could not load. Check rules and admin setup.</div>';
-    }
-  }
-
-  function selectTab(t) {
-    current = t;
-    try { localStorage.setItem("vhubaAdminTab", t); } catch (e) {}
-    return load();
-  }
-
-  $("adminTab").addEventListener("change", () => selectTab($("adminTab").value));
-
-  body().addEventListener("click", async (e) => {
-    const el = e.target;
-    if (el.tagName === "IMG") {
-      const src = el.getAttribute("src");
-      if (src && PHOTO_OK.test(src)) {
-        $("bigImg").src = src;
-        $("bigModal").classList.add("open");
-      }
-      return;
-    }
-    const a = el.getAttribute && el.getAttribute("data-a");
-    if (!a) return;
-    el.disabled = true;
-    try {
-      if (a === "goto") {
-        const f = el.getAttribute("data-filter");
-        if (f) rFilter = f;
-        await selectTab(el.getAttribute("data-tab"));
-        return;
-      } else if (a === "raction") {
-        const ok = await roomAction(el.getAttribute("data-rid"), el.getAttribute("data-act"), el.getAttribute("data-id") || "");
-        if (ok && current === "reports") await loadReports();
-      } else if (a === "rstatus") {
-        if (el.getAttribute("data-s") === "rejected" && !confirm("Reject this report as invalid?")) { el.disabled = false; return; }
-        await setReportStatus(el.getAttribute("data-id"), el.getAttribute("data-s"));
-        await loadReports();
-      } else if (a === "uver" || a === "uunver") {
-        await verifyUser(el.getAttribute("data-uid"), a === "uver");
-        if (current === "users") renderUsers(); else alert("Done.");
-      } else if (a === "uview") {
-        rFilter = "all";
-        rQuery = el.getAttribute("data-uid");
-        await selectTab("rooms");
-        return;
-      } else if (a === "fixold") {
-        await fixOld();
-      } else if (a === "resetpw") {
-        await sendPasswordResetEmail(auth, auth.currentUser.email);
-        alert("Password reset email sent to " + auth.currentUser.email + ". Check Inbox and Spam.");
-      } else if (a === "signout") {
-        c.logout();
-        return;
-      }
-    } catch (err) {
-      alert("Failed (" + (err.code || err.message) + "). Are you an admin?");
-    }
-    el.disabled = false;
-  });
-
-  return { load: load, onRooms: onRooms };
-}

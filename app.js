@@ -1,6 +1,7 @@
 import {
   auth, db, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged,
   sendEmailVerification, GoogleAuthProvider, signInWithPopup,
+  PhoneAuthProvider, RecaptchaVerifier, updatePhoneNumber, linkWithCredential,
   doc, getDoc, setDoc, updateDoc, collection, addDoc, deleteDoc, getDocs, where,
   onSnapshot, query, orderBy, limit, serverTimestamp, writeBatch
 } from "./firebase.js";
@@ -9,6 +10,7 @@ import hi from "./hi.js";
 import ne from "./ne.js";
 import X from "./x.js";
 import Y from "./x2.js";
+import Z from "./x3.js";
 import { initSettings } from "./settings.js";
 import { initAdmin } from "./admin.js";
 
@@ -18,36 +20,22 @@ import { initAdmin } from "./admin.js";
 const SUPPORT_WA = "";
 const SUPPORT_EMAIL = "";
 
-const T = {
-  en: Object.assign({}, en, X.en, Y.en),
-  hi: Object.assign({}, hi, X.hi, Y.hi),
-  ne: Object.assign({}, ne, X.ne, Y.ne)
-};
+/* Set this to true only when SMS verification really works (Firebase billing is on).
+   Then an owner must verify the phone before adding a room. With false, owners can still
+   add rooms, but those rooms stay Pending until an admin approves them. */
+const REQUIRE_PHONE_FOR_OWNERS = false;
 
-const X3 = {
-  en: {
-    verifyToRent: "To rent out a room, please verify your email first. You do not need this for searching rooms or calling owners.",
-    verifyToReport: "To report a room, please verify your email first. You do not need this for searching rooms or calling owners.",
-    verifySent: "We sent a verification email. Check Inbox and Spam."
-  },
-  hi: {
-    verifyToRent: "कमरा किराए पर देने के लिए पहले अपना ईमेल सत्यापित करें। कमरे खोजने या मालिकों को कॉल करने के लिए इसकी ज़रूरत नहीं है।",
-    verifyToReport: "कमरे की रिपोर्ट करने के लिए पहले अपना ईमेल सत्यापित करें। कमरे खोजने या मालिकों को कॉल करने के लिए इसकी ज़रूरत नहीं है।",
-    verifySent: "हमने सत्यापन ईमेल भेज दिया है। इनबॉक्स और स्पैम देखें।"
-  },
-  ne: {
-    verifyToRent: "कोठा भाडामा दिन पहिले आफ्नो इमेल प्रमाणित गर्नुहोस्। कोठा खोज्न वा मालिकलाई फोन गर्न यो आवश्यक छैन।",
-    verifyToReport: "कोठाको रिपोर्ट गर्न पहिले आफ्नो इमेल प्रमाणित गर्नुहोस्। कोठा खोज्न वा मालिकलाई फोन गर्न यो आवश्यक छैन।",
-    verifySent: "हामीले प्रमाणीकरण इमेल पठाएका छौं। इनबक्स र स्प्याम हेर्नुहोस्।"
-  }
+const T = {
+  en: Object.assign({}, en, X.en, Y.en, Z.en),
+  hi: Object.assign({}, hi, X.hi, Y.hi, Z.hi),
+  ne: Object.assign({}, ne, X.ne, Y.ne, Z.ne)
 };
-["en", "hi", "ne"].forEach((l) => Object.assign(T[l], X3[l]));
 
 const TITLE_KEY = {
   home: "navHome", find: "navFind", favs: "navFavs", notices: "navNotices",
-  mine: "navMine", settings: "navSettings", admin: "navAdmin"
+  mine: "navMine", settings: "navSettings", admin: "navAdmin", profile: "navProfile", owner: "navOwner"
 };
-const VIEWS = ["home", "find", "favs", "notices", "mine", "settings", "admin"];
+const VIEWS = ["home", "find", "favs", "notices", "mine", "settings", "admin", "profile", "owner"];
 const DAY = 24 * 60 * 60 * 1000;
 const LIFE_DAYS = 30;
 const REPORT_LIMIT = 3;
@@ -83,6 +71,15 @@ let ssAutoDone = false;
 let pendingPhotos = [];
 let pendingLoc = null;
 let myPos = null;
+let myPub = null;
+let pubCache = {};
+let pubReq = new Set();
+let pfPhoto = "";
+let pvId = null;
+let recaptcha = null;
+let ownerUid = "";
+let ownerBack = "home";
+let renderTimer = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -94,6 +91,21 @@ function esc(t) {
 
 function digits(s) {
   return String(s || "").replace(/\D/g, "");
+}
+
+function initials(name) {
+  const p = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (!p.length) return "?";
+  return (p[0][0] + (p.length > 1 ? p[p.length - 1][0] : "")).toUpperCase();
+}
+
+function avatarHtml(photo, name) {
+  if (typeof photo === "string" && PHOTO_OK.test(photo)) return '<img src="' + photo + '" alt="">';
+  return esc(initials(name));
+}
+
+function phoneVerifiedNow() {
+  return !!(auth.currentUser && auth.currentUser.phoneNumber);
 }
 
 /* ---------- CURRENCY (decided by the ROOM's country, never by the viewer) ---------- */
@@ -145,6 +157,8 @@ function showView(v) {
   closeMenu();
   if (v === "admin") admin.load();
   if (v === "notices") { renderNotices(); markNoticesRead(); }
+  if (v === "profile") renderProfile();
+  if (v === "mine") updateNudge();
   if (v === "find" && profile) {
     seenBefore = profile.lastSeen || Date.now();
     profile.lastSeen = Date.now();
@@ -201,8 +215,8 @@ function stopHeartbeat() {
   if (hbTimer) { clearInterval(hbTimer); hbTimer = null; }
 }
 
-/* Keep the account email and its verified status on the user's profile, so admins can see them.
-   The rules only accept values that match the real login. */
+/* Keep the account email, its verified status and the phone verified status on the user's profile,
+   so admins can see them. The rules only accept values that match the real login. */
 async function syncAuthFields() {
   const u = auth.currentUser;
   if (!u || !profile) return;
@@ -210,6 +224,8 @@ async function syncAuthFields() {
   if (profile.email !== u.email) upd.email = u.email || "";
   const ev = !!u.emailVerified;
   if (profile.emailVerified !== ev) upd.emailVerified = ev;
+  const pv = !!u.phoneNumber && !!profile.phone && u.phoneNumber === "+" + (profile.phoneCc || "91") + String(profile.phone);
+  if (profile.phoneVerified !== pv) upd.phoneVerified = pv;
   if (!Object.keys(upd).length) return;
   try {
     await updateDoc(uref(), upd);
@@ -226,12 +242,62 @@ async function checkAdmin() {
   }
 }
 
+/* ---------- PUBLIC PROFILE (the only part other people can see) ---------- */
+async function loadMyPub() {
+  myPub = null;
+  try {
+    const s = await getDoc(doc(db, "publicProfiles", auth.currentUser.uid));
+    myPub = s.exists() ? s.data() : null;
+  } catch (e) {}
+  if (myPub) pubCache[auth.currentUser.uid] = myPub;
+}
+
+async function writePublic(f) {
+  const u = auth.currentUser;
+  f = f || {};
+  const cur = myPub || {};
+  const showC = !!(profile && profile.showCountry === true);
+  const data = {
+    name: String(f.name !== undefined ? f.name : (cur.name || (profile && profile.name) || "")).trim().slice(0, 60) || "User",
+    bio: String(f.bio !== undefined ? f.bio : (cur.bio || "")).slice(0, 300),
+    photo: f.photo !== undefined ? f.photo : (cur.photo || ""),
+    country: showC ? String((profile && profile.country) || "") : "",
+    emailVerified: !!u.emailVerified,
+    phoneVerified: !!u.phoneNumber,
+    updatedAt: serverTimestamp()
+  };
+  const ref = doc(db, "publicProfiles", u.uid);
+  if (myPub) {
+    await updateDoc(ref, data);
+  } else {
+    data.since = serverTimestamp();
+    await setDoc(ref, data);
+  }
+  myPub = Object.assign({}, myPub || {}, data);
+  pubCache[u.uid] = myPub;
+}
+
+async function syncPublicBadges() {
+  const u = auth.currentUser;
+  if (!u || !myPub) return;
+  if (myPub.emailVerified === !!u.emailVerified && myPub.phoneVerified === !!u.phoneNumber) return;
+  try { await writePublic({}); } catch (e) {}
+}
+
+async function prepareSession() {
+  await syncAuthFields();
+  await loadMyPub();
+  await syncPublicBadges();
+  await checkAdmin();
+}
+
 /* ---------- AUTH ---------- */
 function setTab(t) {
   tab = t;
   $("tabLogin").className = (t === "login") ? "active" : "";
   $("tabSignup").className = (t === "signup") ? "active" : "";
   $("aName").style.display = (t === "signup") ? "block" : "none";
+  $("aCc").style.display = (t === "signup") ? "block" : "none";
   $("aPhone").style.display = (t === "signup") ? "block" : "none";
   $("aBtn").textContent = (t === "signup") ? "Sign up" : "Login";
   $("aMsg").textContent = "";
@@ -241,6 +307,7 @@ function setTab(t) {
 async function doAuth() {
   const name = $("aName").value.trim();
   const phone = $("aPhone").value.trim();
+  const cc = $("aCc").value;
   const email = $("aEmail").value.trim();
   const pass = $("aPass").value;
   const msg = $("aMsg");
@@ -257,12 +324,15 @@ async function doAuth() {
       signingUp = true;
       const cred = await createUserWithEmailAndPassword(auth, email, pass);
       profile = {
-        name: name, phone: phone, email: cred.user.email || "", emailVerified: false,
+        name: name, phone: phone, phoneCc: cc, phoneVerified: false,
+        country: cc === "977" ? "NP" : "IN", showCountry: false,
+        email: cred.user.email || "", emailVerified: false,
         lang: "", accepted: false, hidePhone: false, favs: [], lastSeen: Date.now(),
         createdAt: serverTimestamp(), lastActive: serverTimestamp()
       };
       await setDoc(doc(db, "users", cred.user.uid), profile);
       logEvent("signup");
+      myPub = null;
       signingUp = false;
       $("aPass").value = "";
       route();
@@ -295,15 +365,15 @@ async function doGoogle() {
     } else {
       profile = {
         name: user.displayName || (user.email || "").split("@")[0] || "User",
-        phone: "", email: user.email || "", emailVerified: !!user.emailVerified,
+        phone: "", phoneCc: "91", phoneVerified: false, country: "", showCountry: false,
+        email: user.email || "", emailVerified: !!user.emailVerified,
         lang: "", accepted: false, hidePhone: false, favs: [], lastSeen: Date.now(),
         createdAt: serverTimestamp(), lastActive: serverTimestamp()
       };
       await setDoc(ref, profile);
       logEvent("signup");
     }
-    await syncAuthFields();
-    await checkAdmin();
+    await prepareSession();
     signingUp = false;
     route();
   } catch (e) {
@@ -321,10 +391,13 @@ async function doLogout() {
   stopHeartbeat();
   stopRooms();
   profile = null;
+  myPub = null;
   isAdmin = false;
   ssAutoDone = false;
   afterVerify = "";
   verifySentFor = "";
+  pvId = null;
+  if (recaptcha) { try { recaptcha.clear(); } catch (e) {} recaptcha = null; }
   closeReport();
   closeBig();
   showView("home");
@@ -356,10 +429,14 @@ async function checkVerified() {
     if (auth.currentUser.emailVerified) {
       $("vMsg").textContent = "";
       await syncAuthFields();
+      await syncPublicBadges();
       const to = afterVerify;
       afterVerify = "";
       show("appScreen");
-      if (to === "mine") showView("mine");
+      if (to === "mine") {
+        if (REQUIRE_PHONE_FOR_OWNERS && !phoneVerifiedNow()) { alert(T[lang].needPhone); showView("profile"); }
+        else showView("mine");
+      }
     } else {
       $("vMsg").textContent = "Not verified yet. Open the link in the email first, then press this button again.";
     }
@@ -383,15 +460,48 @@ async function resendVerify() {
   setTimeout(() => { resendBusy = false; $("vResend").disabled = false; }, 60000);
 }
 
+/* ---------- LANGUAGE AND HIDE-PHONE (used by Settings and Profile) ---------- */
+async function changeLang(l) {
+  lang = l;
+  try {
+    await updateDoc(uref(), { lang: l });
+    profile.lang = l;
+  } catch (e) {}
+  applyLang();
+}
+
+/* Update the phone shown on all my rooms (hidden means empty). Returns false if the rules refuse. */
+async function syncRoomsPhone(hide) {
+  try {
+    const h = (hide === undefined) ? !!profile.hidePhone : hide;
+    const snap = await getDocs(query(collection(db, "rooms"), where("uid", "==", auth.currentUser.uid)));
+    if (snap.empty) return true;
+    const b = writeBatch(db);
+    snap.docs.forEach((d) => {
+      b.update(d.ref, { phone: h ? "" : String(profile.phone || ""), cc: profile.phoneCc || d.data().cc || "91" });
+    });
+    await b.commit();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function applyHide(hide) {
+  const ok = await syncRoomsPhone(hide);
+  if (!ok) throw new Error("rooms");
+  await updateDoc(uref(), { hidePhone: hide });
+  profile.hidePhone = hide;
+}
+
 /* ---------- SETTINGS + ADMIN CONNECTION ---------- */
 const settings = initSettings({
   $: $,
   getProfile: () => profile,
   getLang: () => lang,
-  setLang: (l) => { lang = l; },
   T: () => T[lang],
-  applyLang: applyLang,
   applyTheme: applyTheme,
+  applyHide: applyHide,
   doLogout: doLogout
 });
 
@@ -441,6 +551,7 @@ onAuthStateChanged(auth, async (user) => {
     stopHeartbeat();
     stopRooms();
     profile = null;
+    myPub = null;
     isAdmin = false;
     show("welcomeScreen");
     return;
@@ -452,14 +563,15 @@ onAuthStateChanged(auth, async (user) => {
       profile = snap.data();
     } else {
       profile = {
-        name: user.displayName || user.email, phone: "", email: user.email || "", emailVerified: !!user.emailVerified,
+        name: user.displayName || user.email, phone: "", phoneCc: "91", phoneVerified: false,
+        country: "", showCountry: false,
+        email: user.email || "", emailVerified: !!user.emailVerified,
         lang: "", accepted: false, hidePhone: false, favs: [], lastSeen: Date.now(),
         createdAt: serverTimestamp(), lastActive: serverTimestamp()
       };
       await setDoc(ref, profile);
     }
-    await syncAuthFields();
-    await checkAdmin();
+    await prepareSession();
     route();
   } catch (e) {
     show("authScreen");
@@ -494,7 +606,7 @@ function setupSupport(t) {
   let h = "";
   if (SUPPORT_WA) {
     h += '<a class="call wa" href="https://wa.me/' + esc(digits(SUPPORT_WA)) +
-      '" target="_blank" rel="noopener">' + esc(t.supWa) + '</a>';
+      '" target="_blank" rel="noopener">' +esc(t.supWa) + '</a>';
   }
   if (SUPPORT_EMAIL) {
     h += '<a class="call map" href="mailto:' + esc(SUPPORT_EMAIL) + '">' + esc(t.supMail) + '</a>';
@@ -547,6 +659,12 @@ function updateCurrencyUI() {
   $("deposit").placeholder = t.depositPh2.replace("{cur}", cur);
 }
 
+function updateNudge() {
+  const t = T[lang];
+  $("nudgeText").textContent = t.nudgeText;
+  $("phoneNudge").style.display = (auth.currentUser && !phoneVerifiedNow()) ? "block" : "none";
+}
+
 function applyLang() {
   const t = T[lang];
   document.documentElement.lang = lang;
@@ -555,14 +673,17 @@ function applyLang() {
   $("policyText").innerHTML = t.privText;
   $("policyText2").innerHTML = t.privText;
   $("lang").value = lang;
+  $("pfLang").value = lang;
   $("hello").textContent = profile ? (t.hello + profile.name) : "";
   $("pageTitle").textContent = t[TITLE_KEY[currentView]];
   $("myUidText").textContent = auth.currentUser ? (t.myId + ": " + auth.currentUser.uid) : "";
   $("locInfo").textContent = pendingLoc ? t.locGot : "";
   buildPriceFilters();
   updateCurrencyUI();
+  updateNudge();
   setupSupport(t);
   updateNoticeBadge();
+  if (currentView === "profile") renderProfileDyn();
   render();
 }
 
@@ -589,8 +710,7 @@ function hasLoc(r) { return typeof r.lat === "number" && typeof r.lng === "numbe
 /* ---------- LOCATION ---------- */
 function getPos() {
   return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) { reject(new Error("no geo")); return;
-    }
+    if (!navigator.geolocation) { reject(new Error("no geo")); return; }
     navigator.geolocation.getCurrentPosition(
       (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude }),
       () => reject(new Error("denied")),
@@ -631,7 +751,9 @@ function clearLocation() {
 }
 
 /* ---------- PHOTOS ---------- */
-function compress(file) {
+function compress(file, max, q) {
+  const mx = max || 600;
+  const qu = q || 0.6;
   return new Promise((resolve, reject) => {
     const fr = new FileReader();
     fr.onerror = () => reject(new Error("read"));
@@ -639,15 +761,14 @@ function compress(file) {
       const img = new Image();
       img.onerror = () => reject(new Error("img"));
       img.onload = () => {
-        const max = 600;
-        const s = Math.min(1, max / Math.max(img.width, img.height));
+        const s = Math.min(1, mx / Math.max(img.width, img.height));
         const w = Math.max(1, Math.round(img.width * s));
         const h = Math.max(1, Math.round(img.height * s));
         const c = document.createElement("canvas");
         c.width = w;
         c.height = h;
         c.getContext("2d").drawImage(img, 0, 0, w, h);
-        resolve(c.toDataURL("image/jpeg", 0.6));
+        resolve(c.toDataURL("image/jpeg", qu));
       };
       img.src = fr.result;
     };
@@ -875,6 +996,25 @@ async function markNoticesRead() {
 }
 
 /* ---------- ROOMS ---------- */
+function schedRender() {
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(render, 150);
+}
+
+/* Fetch the public profile of the owners shown on screen (only new ones, at most 30 at a time). */
+function prefetchOwners(list) {
+  const need = [];
+  list.forEach((r) => {
+    if (r.uid && !(r.uid in pubCache) && !pubReq.has(r.uid) && need.indexOf(r.uid) === -1) need.push(r.uid);
+  });
+  need.slice(0, 30).forEach((uid) => {
+    pubReq.add(uid);
+    getDoc(doc(db, "publicProfiles", uid))
+      .then((s) => { pubCache[uid] = s.exists() ? s.data() : null; schedRender(); })
+      .catch(() => { pubCache[uid] = null; });
+  });
+}
+
 function startRooms() {
   if (unsubRooms || !auth.currentUser) return;
   const uid = auth.currentUser.uid;
@@ -937,9 +1077,11 @@ function checksHtml(r, t) {
   const photo = Array.isArray(r.photos) && r.photos.length >= 1;
   const emailOk = !!(auth.currentUser && auth.currentUser.emailVerified);
   const nameOk = !!(profile && String(profile.name || "").trim().length >= 2);
+  const phoneOk = phoneVerifiedNow();
   const line = (ok, txt) => '<p class="hint" style="padding:2px 0">' + (ok ? "✔ " : "✘ ") + esc(txt) + '</p>';
   return '<p class="hint" style="padding:6px 0 0"><b>' + esc(t.chkTitle) + '</b></p>' +
-    line(photo, t.chkPhoto) + line(emailOk, t.chkEmail) + line(nameOk, t.chkName) + line(false, t.chkPhone) +
+    line(photo, t.chkPhoto) + line(emailOk, t.chkEmail) + line(nameOk, t.chkName) +
+    line(phoneOk, phoneOk ? t.chkPhoneOk : t.chkPhone) +
     (photo ? '' : '<p class="hint" style="padding:2px 0">' + esc(t.noPhotoWarn) + '</p>');
 }
 
@@ -963,6 +1105,7 @@ function cardTop(r, t) {
   const verTag = verifiedSet.has(r.uid) ? '<span class="tag ok">' + esc(t.verified) + '</span>' : '';
   const apTag = (apOf(r) === "approved" && r.approvalBy && r.approvalBy !== "legacy")
     ? '<span class="tag ok">✔ ' + esc(t.stApproved) + '</span>' : '';
+  const phTag = (r.approvalBy === "auto") ? '<span class="tag ok">📞 ' + esc(t.phoneVerifiedTag) + '</span>' : '';
   const ownTag = r.ownerType === "owner" ? '<span class="tag">' + esc(t.tagOwner) + '</span>'
     : r.ownerType === "broker" ? '<span class="tag bad">' + esc(t.tagBroker) + '</span>' : '';
   const ctTag = '<span class="tag">' + esc(t["tag" + c]) + '</span>';
@@ -974,7 +1117,7 @@ function cardTop(r, t) {
   const desc = r.description ? '<p>' + esc(r.description) + '</p>' : '';
   return '<h3>' + esc(r.title || "") + '</h3>' +
     '<span class="tag">' + esc(t[r.type] || "") + '</span>' +
-    '<span class="tag">' + esc(t[r.loc] || "") + '</span>' + ctTag + exTag + ownTag + apTag + verTag + distTag +
+    '<span class="tag">' + esc(t[r.loc] || "") + '</span>' + ctTag + exTag + ownTag + apTag + phTag + verTag + distTag +
     '<p>' + esc(t.areaLabel) + ': ' + esc(r.area || "") + '</p>' +
     '<p class="price">' + esc(money(r.price, cur)) + ' ' + esc(t.perMonth) + '</p>' + dep + desc +
     photosHtml(r);
@@ -995,6 +1138,13 @@ function contactBtns(r, t) {
       '" target="_blank" rel="noopener">' + esc(t.openMap) + '</a>';
   }
   return h;
+}
+
+function ownerBtn(r, t) {
+  const p = pubCache[r.uid];
+  const nm = p && p.name ? p.name : "";
+  return '<button class="rep" data-owner="' + esc(r.uid) + '">👤 ' +
+    esc(nm ? t.ownerBy.replace("{name}", nm) : t.ownerProfile) + '</button>';
 }
 
 function heartBtn(id, isFav) {
@@ -1032,7 +1182,7 @@ function render() {
     if (mine) {
       html += '<span class="tag">' + esc(t.yours) + '</span>';
     } else {
-      html += contactBtns(r, t) +
+      html += contactBtns(r, t) + ownerBtn(r, t) +
         '<button class="rep" data-rep="' + esc(r.id) + '">' + esc(t.reportRoom) + '</button>';
     }
     html += '</div>';
@@ -1041,6 +1191,7 @@ function render() {
   $("list").innerHTML = html;
 
   let fhtml = "";
+  const favRooms = [];
   favs.forEach((id) => {
     const r = roomsData.find((x) => x.id === id);
     if (!r) {
@@ -1048,9 +1199,10 @@ function render() {
         '<p class="phoneoff">' + esc(t.noLonger) + '</p></div>';
       return;
     }
+    favRooms.push(r);
     fhtml += '<div class="card">' + heartBtn(id, true) + cardTop(r, t);
     if (isLive(r)) {
-      fhtml += (r.uid === myUid) ? '<span class="tag">' + esc(t.yours) + '</span>' : contactBtns(r, t);
+      fhtml += (r.uid === myUid) ? '<span class="tag">' + esc(t.yours) + '</span>' : contactBtns(r, t) + ownerBtn(r, t);
     } else {
       fhtml += '<span class="tag bad">' + esc(t.noLonger) + '</span>';
     }
@@ -1096,6 +1248,9 @@ function render() {
   $("myList").innerHTML = mhtml;
 
   if (isAdmin && currentView === "admin") admin.onRooms();
+  if (currentView === "owner" && ownerUid) renderOwner(ownerUid);
+  if (currentView === "profile") renderProfileDyn();
+  prefetchOwners(found.concat(favRooms));
 }
 
 async function addRoom() {
@@ -1121,18 +1276,22 @@ async function addRoom() {
 
   $("addBtn").disabled = true;
   try {
-    /* Every room starts as pending. The automatic path only works if the login itself carries a
-       phone number verified by OTP, and the database rules double-check it. Today nobody can
-       reach it, because phone OTP login is not added yet. */
+    /* Every room starts as pending. It is approved automatically only if the login carries a phone
+       number verified by SMS code, that number is the one on the room (or the owner hides the number),
+       and a photo and a name exist. The database rules check all of this again. */
     let approval = "pending";
     let approvalBy = "system";
+    let mismatch = false;
     try {
-      const tk = await auth.currentUser.getIdTokenResult();
-      if (tk.claims.phone_number && pendingPhotos.length >= 1 && String(profile.name || "").trim().length >= 2) {
-        approval = "approved";
-        approvalBy = "auto";
+      const tk = await auth.currentUser.getIdTokenResult(true);
+      const tp = tk.claims.phone_number;
+      if (tp && pendingPhotos.length >= 1 && String(profile.name || "").trim().length >= 2) {
+        if (hide || tp === "+" + cc + phone) { approval = "approved"; approvalBy = "auto"; }
+        else mismatch = true;
       }
     } catch (e) {}
+
+    if (!myPub) { try { await writePublic({}); } catch (e) {} }
 
     const data = {
       title: title, area: area, loc: loc, country: country, currency: CUR[country],
@@ -1171,7 +1330,7 @@ async function addRoom() {
       pendingPhotos = [];
       showPreviews();
       clearLocation();
-      alert(approval === "approved" ? t.addedApproved : t.addedPending);
+      alert(approval === "approved" ? t.addedApproved : (t.addedPending + (mismatch ? "\n\n" + t.phoneMismatch : "")));
     }
   } catch (e) {
     alert(t.errGeneric + " (" + (e.code || e.message) + ")");
@@ -1204,6 +1363,238 @@ async function renewRoom(id) {
     alert(T[lang].errGeneric);
   }
 }
+/* ---------- MY PROFILE (private page) ---------- */
+function updatePhoneUI() {
+  const t = T[lang];
+  const u = auth.currentUser;
+  if (!u) return;
+  const num = digits($("pfPhone").value);
+  const typed = "+" + $("pfCc").value + num;
+  const ok = !!u.phoneNumber && num.length === 10 && u.phoneNumber === typed;
+  let badge = "";
+  if (num.length === 10) {
+    badge = ok ? '<span class="tag ok">' + esc(t.pfPhoneOk) + '</span>' : '<span class="tag bad">' + esc(t.pfPhoneNo) + '</span>';
+  }
+  $("pfPhoneBadge").innerHTML = badge;
+  $("pvSend").style.display = (num.length === 10 && !ok) ? "block" : "none";
+}
+
+function renderProfileDyn() {
+  if (!profile || !auth.currentUser) return;
+  const t = T[lang];
+  const u = auth.currentUser;
+  const ev = !!u.emailVerified;
+  $("pfEmail").textContent = u.email || "";
+  $("pfEmailBadge").innerHTML = ev ? '<span class="tag ok">' + esc(t.pfEmailOk) + '</span>'
+    : '<span class="tag bad">' + esc(t.pfEmailNo) + '</span>';
+  $("pfVerifyEmail").style.display = ev ? "none" : "block";
+  const since = (profile.createdAt && profile.createdAt.toDate) ? profile.createdAt.toDate().toLocaleDateString() : "-";
+  const rooms = roomsData.filter((r) => r.uid === u.uid).length;
+  $("pfMeta").textContent = t.pfMeta.replace("{since}", since).replace("{rooms}", String(rooms))
+    .replace("{favs}", String((profile.favs || []).length));
+  $("pfInfo").textContent = t.pfInfo;
+  updatePhoneUI();
+}
+
+function renderProfile() {
+  if (!profile || !auth.currentUser) return;
+  const pub = myPub || {};
+  $("pfName").value = profile.name || "";
+  $("pfBio").value = pub.bio || "";
+  $("pfCountry").value = profile.country || "";
+  $("pfShowCountry").checked = profile.showCountry === true;
+  $("pfCc").value = profile.phoneCc || "91";
+  $("pfPhone").value = profile.phone || "";
+  $("pfLang").value = lang;
+  pfPhoto = pub.photo || "";
+  $("pfAvatar").innerHTML = avatarHtml(pfPhoto, profile.name);
+  $("pfPhotoDel").style.display = pfPhoto ? "inline-block" : "none";
+  $("pfPhoto").value = "";
+  $("pvStep2").style.display = "none";
+  $("pvCode").value = "";
+  $("pvMsg").textContent = "";
+  $("pvInfo").textContent = "";
+  renderProfileDyn();
+}
+
+async function onPfPhoto() {
+  const f = ($("pfPhoto").files || [])[0];
+  if (!f) return;
+  try {
+    let q = 0.75;
+    let data = await compress(f, 240, q);
+    while (data.length > 55000 && q > 0.4) { q -= 0.1; data = await compress(f, 240, q); }
+    if (data.length > 55000) throw new Error("big");
+    pfPhoto = data;
+    $("pfAvatar").innerHTML = avatarHtml(pfPhoto, $("pfName").value);
+    $("pfPhotoDel").style.display = "inline-block";
+  } catch (e) {
+    $("pfPhoto").value = "";
+    alert(T[lang].photoErr);
+  }
+}
+
+function removePfPhoto() {
+  pfPhoto = "";
+  $("pfPhoto").value = "";
+  $("pfAvatar").innerHTML = avatarHtml("", $("pfName").value);
+  $("pfPhotoDel").style.display = "none";
+}
+
+async function saveProfile() {
+  const t = T[lang];
+  const name = $("pfName").value.trim();
+  const bio = $("pfBio").value.trim().slice(0, 300);
+  const country = $("pfCountry").value;
+  const showCountry = $("pfShowCountry").checked;
+  const cc = $("pfCc").value;
+  const phone = digits($("pfPhone").value);
+  if (name.length < 2) { alert(t.pfNameShort); return; }
+  if (phone && !/^[0-9]{10}$/.test(phone)) { alert(t.badPhone); return; }
+
+  $("pfSave").disabled = true;
+  try {
+    const u = auth.currentUser;
+    const phoneChanged = phone !== String(profile.phone || "") || cc !== (profile.phoneCc || "91");
+    const pv = !!u.phoneNumber && !!phone && u.phoneNumber === "+" + cc + phone;
+    const upd = { name: name, country: country, showCountry: showCountry, phone: phone, phoneCc: cc, phoneVerified: pv };
+    await updateDoc(uref(), upd);
+    Object.assign(profile, upd);
+    await writePublic({ name: name, bio: bio, photo: pfPhoto });
+    $("hello").textContent = t.hello + profile.name;
+    let roomsOk = true;
+    if (phoneChanged && phone && !profile.hidePhone) roomsOk = await syncRoomsPhone();
+    alert(roomsOk ? t.pfSaved : t.pfRoomsPhoneFail);
+    renderProfileDyn();
+  } catch (e) {
+    alert(t.errGeneric + " (" + (e.code || e.message) + ")");
+  }
+  $("pfSave").disabled = false;
+}
+
+/* ---------- PHONE VERIFICATION BY SMS CODE (owners) ---------- */
+function phoneError(code) {
+  const t = T[lang];
+  const map = {
+    "auth/invalid-phone-number": t.pvErrInvalid,
+    "auth/missing-phone-number": t.pvErrInvalid,
+    "auth/too-many-requests": t.pvErrMany,
+    "auth/quota-exceeded": t.pvErrQuota,
+    "auth/operation-not-allowed": t.pvErrNA,
+    "auth/billing-not-enabled": t.pvErrNA,
+    "auth/invalid-verification-code": t.pvErrCode,
+    "auth/code-expired": t.pvErrExpired,
+    "auth/credential-already-in-use": t.pvErrUsed,
+    "auth/account-exists-with-different-credential": t.pvErrUsed,
+    "auth/requires-recent-login": t.pvErrRecent,
+    "auth/captcha-check-failed": t.pvErrCaptcha,
+    "auth/network-request-failed": t.pvErrNet
+  };
+  return map[code] || (t.errGeneric + " (" + code + ")");
+}
+
+function resetRecaptcha() {
+  if (recaptcha) { try { recaptcha.clear(); } catch (e) {} recaptcha = null; }
+  $("pvCaptcha").innerHTML = "";
+}
+
+async function sendOtp() {
+  const t = T[lang];
+  $("pvMsg").textContent = "";
+  $("pvInfo").textContent = "";
+  const cc = $("pfCc").value;
+  const num = digits($("pfPhone").value);
+  if (!/^[0-9]{10}$/.test(num)) { $("pvMsg").textContent = t.pvErrInvalid; return; }
+  $("pvSend").disabled = true;
+  try {
+    if (!recaptcha) recaptcha = new RecaptchaVerifier(auth, "pvCaptcha", { size: "invisible" });
+    const provider = new PhoneAuthProvider(auth);
+    pvId = await provider.verifyPhoneNumber("+" + cc + num, recaptcha);
+    $("pvStep2").style.display = "block";
+    $("pvInfo").textContent = t.pvSent;
+  } catch (e) {
+    $("pvMsg").textContent = phoneError(e.code);
+    resetRecaptcha();
+  }
+  $("pvSend").disabled = false;
+}
+
+async function confirmOtp() {
+  const t = T[lang];
+  $("pvMsg").textContent = "";
+  const code = digits($("pvCode").value);
+  if (code.length !== 6 || !pvId) { $("pvMsg").textContent = t.pvErrCode; return; }
+  $("pvConfirm").disabled = true;
+  try {
+    const u = auth.currentUser;
+    const cred = PhoneAuthProvider.credential(pvId, code);
+    if (u.phoneNumber) await updatePhoneNumber(u, cred);
+    else await linkWithCredential(u, cred);
+    await u.getIdToken(true);
+    const cc = $("pfCc").value;
+    const num = digits($("pfPhone").value);
+    const upd = { phone: num, phoneCc: cc, phoneVerified: true };
+    await updateDoc(uref(), upd);
+    Object.assign(profile, upd);
+    try { await writePublic({}); } catch (e) {}
+    if (!profile.hidePhone) await syncRoomsPhone();
+    pvId = null;
+    resetRecaptcha();
+    $("pvStep2").style.display = "none";
+    $("pvCode").value = "";
+    $("pvInfo").textContent = t.pvDone;
+    renderProfileDyn();
+    updateNudge();
+  } catch (e) {
+    $("pvMsg").textContent = phoneError(e.code);
+  }
+  $("pvConfirm").disabled = false;
+}
+
+/* ---------- OWNER PROFILE (public page of another person) ---------- */
+async function openOwner(uid) {
+  if (currentView !== "owner") ownerBack = currentView;
+  ownerUid = uid;
+  showView("owner");
+  renderOwner(uid);
+  try {
+    const s = await getDoc(doc(db, "publicProfiles", uid));
+    pubCache[uid] = s.exists() ? s.data() : null;
+  } catch (e) {}
+  if (ownerUid === uid) renderOwner(uid);
+}
+
+function renderOwner(uid) {
+  const t = T[lang];
+  const myUid = auth.currentUser ? auth.currentUser.uid : "";
+  const p = pubCache[uid];
+  $("ovAvatar").innerHTML = avatarHtml(p && p.photo, p && p.name);
+  $("ovName").textContent = (p && p.name) ? p.name : t.ownerProfile;
+  let b = "";
+  if (verifiedSet.has(uid)) b += '<span class="tag ok">' + esc(t.verified) + '</span>';
+  if (p && p.emailVerified) b += '<span class="tag ok">' + esc(t.ovEmail) + '</span>';
+  if (p && p.phoneVerified) b += '<span class="tag ok">' + esc(t.ovPhone) + '</span>';
+  $("ovBadges").innerHTML = b;
+
+  let body = "";
+  if (p) {
+    if (p.bio) body += '<div class="card" style="margin:12px 0"><p style="white-space:pre-wrap">' + esc(p.bio) + '</p></div>';
+    if (p.country) body += '<p>' + esc(t.ovCountry.replace("{c}", p.country === "NP" ? t.pfNP : t.pfIN)) + '</p>';
+    if (p.since && p.since.toDate) body += '<p class="hint" style="padding:0">' + esc(t.ovSince.replace("{d}", p.since.toDate().toLocaleDateString())) + '</p>';
+  } else {
+    body += '<p class="hint" style="padding:0">' + esc(t.ovNoProfile) + '</p>';
+  }
+  $("ovBody").innerHTML = body;
+
+  const rooms = roomsData.filter((r) => r.uid === uid && isLive(r));
+  let h = "";
+  rooms.forEach((r) => {
+    h += '<div class="card" style="margin:12px 0">' + cardTop(r, t) +
+      (uid === myUid ? '<span class="tag">' + esc(t.yours) + '</span>' : contactBtns(r, t)) + '</div>';
+  });
+  $("ovRooms").innerHTML = h || '<div class="empty">' + esc(t.ovNone) + '</div>';
+}
+
 /* ---------- REPORT (needs a verified email) ---------- */
 async function openReport(id) {
   const r = roomsData.find((x) => x.id === id);
@@ -1265,6 +1656,7 @@ function listClick(e) {
   else if (g("data-avail")) setStatus(g("data-avail"), "available");
   else if (g("data-renew")) renewRoom(g("data-renew"));
   else if (g("data-fav")) toggleFav(g("data-fav"));
+  else if (g("data-owner")) openOwner(g("data-owner"));
   else if (g("data-big")) openBig(g("data-big"));
 }
 
@@ -1292,20 +1684,41 @@ $("declineBtn").addEventListener("click", doLogout);
 $("menuBtn").addEventListener("click", openMenu);
 $("menuOverlay").addEventListener("click", closeMenu);
 $("mHome").addEventListener("click", () => showView("home"));
+$("mProfile").addEventListener("click", () => showView("profile"));
 $("mFavs").addEventListener("click", () => showView("favs"));
 $("mNotices").addEventListener("click", () => showView("notices"));
 $("mSettings").addEventListener("click", () => { settings.sync(); showView("settings"); });
 $("mAdmin").addEventListener("click", () => showView("admin"));
 $("mLogout").addEventListener("click", doLogout);
+$("rowProfile").addEventListener("click", () => showView("profile"));
 
 $("goFind").addEventListener("click", () => showView("find"));
-$("goMine").addEventListener("click", () => { if (needVerify("rent")) return; showView("mine"); });
+$("goMine").addEventListener("click", () => {
+  if (needVerify("rent")) return;
+  if (REQUIRE_PHONE_FOR_OWNERS && !phoneVerifiedNow()) { alert(T[lang].needPhone); showView("profile"); return; }
+  showView("mine");
+});
+$("nudgeBtn").addEventListener("click", () => showView("profile"));
 $("backFind").addEventListener("click", () => showView("home"));
 $("backFavs").addEventListener("click", () => showView("home"));
 $("backNotices").addEventListener("click", () => showView("home"));
 $("backMine").addEventListener("click", () => showView("home"));
 $("backHome").addEventListener("click", () => showView("home"));
 $("backAdmin").addEventListener("click", () => showView("home"));
+$("backProfile").addEventListener("click", () => showView("home"));
+$("backOwner").addEventListener("click", () => { ownerUid = ""; showView(ownerBack || "home"); });
+
+$("pfPhoto").addEventListener("change", onPfPhoto);
+$("pfPhotoDel").addEventListener("click", removePfPhoto);
+$("pfSave").addEventListener("click", saveProfile);
+$("pfPublic").addEventListener("click", () => { if (auth.currentUser) openOwner(auth.currentUser.uid); });
+$("pfVerifyEmail").addEventListener("click", () => { needVerify("report"); });
+$("pfCc").addEventListener("change", updatePhoneUI);
+$("pfPhone").addEventListener("input", updatePhoneUI);
+$("pvSend").addEventListener("click", sendOtp);
+$("pvConfirm").addEventListener("click", confirmOtp);
+$("pfLang").addEventListener("change", function () { changeLang(this.value); });
+$("lang").addEventListener("change", function () { changeLang(this.value); });
 
 $("photos").addEventListener("change", onPhotos);
 $("locBtn").addEventListener("click", useMyLocation);
@@ -1334,6 +1747,7 @@ $("ssClear").addEventListener("click", clearSearch);
 $("list").addEventListener("click", listClick);
 $("favList").addEventListener("click", listClick);
 $("myList").addEventListener("click", listClick);
+$("ovRooms").addEventListener("click", listClick);
 $("search").addEventListener("input", render);
 ["typeFilter", "locFilter", "budgetFilter", "depFilter", "exFilter", "ownFilter"].forEach((id) => {
   $(id).addEventListener("change", render);
