@@ -1,6 +1,7 @@
 import {
   auth, db, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged,
-  sendEmailVerification, doc, getDoc, setDoc, updateDoc, collection, addDoc, deleteDoc, getDocs, where,
+  sendEmailVerification, GoogleAuthProvider, signInWithPopup,
+  doc, getDoc, setDoc, updateDoc, collection, addDoc, deleteDoc, getDocs, where,
   onSnapshot, query, orderBy, limit, serverTimestamp, writeBatch
 } from "./firebase.js";
 import en from "./en.js";
@@ -22,6 +23,25 @@ const T = {
   hi: Object.assign({}, hi, X.hi, Y.hi),
   ne: Object.assign({}, ne, X.ne, Y.ne)
 };
+
+const X3 = {
+  en: {
+    verifyToRent: "To rent out a room, please verify your email first. You do not need this for searching rooms or calling owners.",
+    verifyToReport: "To report a room, please verify your email first. You do not need this for searching rooms or calling owners.",
+    verifySent: "We sent a verification email. Check Inbox and Spam."
+  },
+  hi: {
+    verifyToRent: "कमरा किराए पर देने के लिए पहले अपना ईमेल सत्यापित करें। कमरे खोजने या मालिकों को कॉल करने के लिए इसकी ज़रूरत नहीं है।",
+    verifyToReport: "कमरे की रिपोर्ट करने के लिए पहले अपना ईमेल सत्यापित करें। कमरे खोजने या मालिकों को कॉल करने के लिए इसकी ज़रूरत नहीं है।",
+    verifySent: "हमने सत्यापन ईमेल भेज दिया है। इनबॉक्स और स्पैम देखें।"
+  },
+  ne: {
+    verifyToRent: "कोठा भाडामा दिन पहिले आफ्नो इमेल प्रमाणित गर्नुहोस्। कोठा खोज्न वा मालिकलाई फोन गर्न यो आवश्यक छैन।",
+    verifyToReport: "कोठाको रिपोर्ट गर्न पहिले आफ्नो इमेल प्रमाणित गर्नुहोस्। कोठा खोज्न वा मालिकलाई फोन गर्न यो आवश्यक छैन।",
+    verifySent: "हामीले प्रमाणीकरण इमेल पठाएका छौं। इनबक्स र स्प्याम हेर्नुहोस्।"
+  }
+};
+["en", "hi", "ne"].forEach((l) => Object.assign(T[l], X3[l]));
 
 const TITLE_KEY = {
   home: "navHome", find: "navFind", favs: "navFavs", notices: "navNotices",
@@ -45,6 +65,8 @@ let profile = null;
 let signingUp = false;
 let isAdmin = false;
 let resendBusy = false;
+let afterVerify = "";
+let verifySentFor = "";
 let currentView = "home";
 let roomsData = [];
 let pubMap = new Map();
@@ -146,7 +168,10 @@ function authError(code) {
     "auth/wrong-password": "Wrong email or password.",
     "auth/too-many-requests": "Too many tries. Please wait and try again.",
     "auth/network-request-failed": "No internet. Please check your connection.",
-    "auth/unauthorized-domain": "This website address is not allowed in Firebase yet."
+    "auth/unauthorized-domain": "This website address is not allowed in Firebase yet.",
+    "auth/popup-blocked": "Your browser blocked the Google window. Allow pop-ups for this site and try again.",
+    "auth/operation-not-allowed": "Google login is not turned on in Firebase yet.",
+    "auth/account-exists-with-different-credential": "This email already has an account. Please login with email and password."
   };
   return map[code] || "Something went wrong. Please try again.";
 }
@@ -192,6 +217,15 @@ async function syncAuthFields() {
   } catch (e) {}
 }
 
+async function checkAdmin() {
+  try {
+    await getDocs(query(collection(db, "reports"), limit(1)));
+    isAdmin = true;
+  } catch (e) {
+    isAdmin = false;
+  }
+}
+
 /* ---------- AUTH ---------- */
 function setTab(t) {
   tab = t;
@@ -203,6 +237,7 @@ function setTab(t) {
   $("aMsg").textContent = "";
 }
 
+/* Email and password. Customers are not asked to verify their email here. */
 async function doAuth() {
   const name = $("aName").value.trim();
   const phone = $("aPhone").value.trim();
@@ -221,7 +256,6 @@ async function doAuth() {
       if (!/^[0-9]{10}$/.test(phone)) { msg.textContent = "Enter a valid 10 digit phone number."; $("aBtn").disabled = false; return; }
       signingUp = true;
       const cred = await createUserWithEmailAndPassword(auth, email, pass);
-      try { await sendEmailVerification(cred.user); } catch (e) {}
       profile = {
         name: name, phone: phone, email: cred.user.email || "", emailVerified: false,
         lang: "", accepted: false, hidePhone: false, favs: [], lastSeen: Date.now(),
@@ -244,6 +278,44 @@ async function doAuth() {
   $("aBtn").disabled = false;
 }
 
+/* Continue with Google. The pop-up must open straight from the tap, so nothing async comes before it. */
+async function doGoogle() {
+  const msg = $("aMsg");
+  msg.textContent = "";
+  $("gBtn").disabled = true;
+  signingUp = true;
+  try {
+    const cred = await signInWithPopup(auth, new GoogleAuthProvider());
+    const user = cred.user;
+    const ref = doc(db, "users", user.uid);
+    const snap = await getDoc(ref);
+    if (snap.exists()) {
+      profile = snap.data();
+      logEvent("login");
+    } else {
+      profile = {
+        name: user.displayName || (user.email || "").split("@")[0] || "User",
+        phone: "", email: user.email || "", emailVerified: !!user.emailVerified,
+        lang: "", accepted: false, hidePhone: false, favs: [], lastSeen: Date.now(),
+        createdAt: serverTimestamp(), lastActive: serverTimestamp()
+      };
+      await setDoc(ref, profile);
+      logEvent("signup");
+    }
+    await syncAuthFields();
+    await checkAdmin();
+    signingUp = false;
+    route();
+  } catch (e) {
+    signingUp = false;
+    if (auth.currentUser && !profile) { try { await signOut(auth); } catch (x) {} }
+    if (e.code !== "auth/popup-closed-by-user" && e.code !== "auth/cancelled-popup-request") {
+      msg.textContent = authError(e.code);
+    }
+  }
+  $("gBtn").disabled = false;
+}
+
 async function doLogout() {
   await logEvent("logout");
   stopHeartbeat();
@@ -251,6 +323,8 @@ async function doLogout() {
   profile = null;
   isAdmin = false;
   ssAutoDone = false;
+  afterVerify = "";
+  verifySentFor = "";
   closeReport();
   closeBig();
   showView("home");
@@ -258,7 +332,22 @@ async function doLogout() {
   await signOut(auth);
 }
 
-/* ---------- EMAIL VERIFY ---------- */
+/* ---------- EMAIL VERIFY (only needed to rent out a room, or to report a room) ---------- */
+function needVerify(kind) {
+  const u = auth.currentUser;
+  if (!u || u.emailVerified) return false;
+  afterVerify = (kind === "rent") ? "mine" : "";
+  $("verifyEmail").textContent = u.email || "";
+  $("vWhy").textContent = T[lang][kind === "rent" ? "verifyToRent" : "verifyToReport"];
+  $("vMsg").textContent = "";
+  show("verifyScreen");
+  if (verifySentFor !== u.uid) {
+    verifySentFor = u.uid;
+    sendEmailVerification(u).then(() => { $("vMsg").textContent = T[lang].verifySent; }).catch(function () {});
+  }
+  return true;
+}
+
 async function checkVerified() {
   $("vCheck").disabled = true;
   try {
@@ -267,7 +356,10 @@ async function checkVerified() {
     if (auth.currentUser.emailVerified) {
       $("vMsg").textContent = "";
       await syncAuthFields();
-      route();
+      const to = afterVerify;
+      afterVerify = "";
+      show("appScreen");
+      if (to === "mine") showView("mine");
     } else {
       $("vMsg").textContent = "Not verified yet. Open the link in the email first, then press this button again.";
     }
@@ -321,11 +413,6 @@ const admin = initAdmin({
 /* ---------- ROUTER ---------- */
 function route() {
   if (!auth.currentUser || !profile) { stopRooms(); show("welcomeScreen"); return; }
-  if (!auth.currentUser.emailVerified) {
-    $("verifyEmail").textContent = auth.currentUser.email || "";
-    show("verifyScreen");
-    return;
-  }
   if (!profile.lang) { show("langScreen"); return; }
   lang = profile.lang;
   if (profile.lastSeen === undefined) {
@@ -365,19 +452,14 @@ onAuthStateChanged(auth, async (user) => {
       profile = snap.data();
     } else {
       profile = {
-        name: user.email, phone: "", email: user.email || "", emailVerified: false,
+        name: user.displayName || user.email, phone: "", email: user.email || "", emailVerified: !!user.emailVerified,
         lang: "", accepted: false, hidePhone: false, favs: [], lastSeen: Date.now(),
         createdAt: serverTimestamp(), lastActive: serverTimestamp()
       };
       await setDoc(ref, profile);
     }
     await syncAuthFields();
-    try {
-      await getDocs(query(collection(db, "reports"), limit(1)));
-      isAdmin = true;
-    } catch (e) {
-      isAdmin = false;
-    }
+    await checkAdmin();
     route();
   } catch (e) {
     show("authScreen");
@@ -507,7 +589,8 @@ function hasLoc(r) { return typeof r.lat === "number" && typeof r.lng === "numbe
 /* ---------- LOCATION ---------- */
 function getPos() {
   return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) { reject(new Error("no geo")); return; }
+    if (!navigator.geolocation) { reject(new Error("no geo")); return;
+    }
     navigator.geolocation.getCurrentPosition(
       (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude }),
       () => reject(new Error("denied")),
@@ -1121,10 +1204,11 @@ async function renewRoom(id) {
     alert(T[lang].errGeneric);
   }
 }
-/* ---------- REPORT ---------- */
+/* ---------- REPORT (needs a verified email) ---------- */
 async function openReport(id) {
   const r = roomsData.find((x) => x.id === id);
   if (!r || !auth.currentUser) return;
+  if (needVerify("report")) return;
   try {
     const s = await getDoc(doc(db, "reports", id + "_" + auth.currentUser.uid));
     if (s.exists()) { alert(T[lang].alreadyReported); return; }
@@ -1191,9 +1275,11 @@ $("aBack").addEventListener("click", () => show("welcomeScreen"));
 $("tabLogin").addEventListener("click", () => setTab("login"));
 $("tabSignup").addEventListener("click", () => setTab("signup"));
 $("aBtn").addEventListener("click", doAuth);
+$("gBtn").addEventListener("click", doGoogle);
 
 $("vCheck").addEventListener("click", checkVerified);
 $("vResend").addEventListener("click", resendVerify);
+$("vBack").addEventListener("click", () => { afterVerify = ""; show("appScreen"); });
 $("vLogout").addEventListener("click", doLogout);
 
 document.querySelectorAll("[data-l]").forEach((b) => {
@@ -1213,7 +1299,7 @@ $("mAdmin").addEventListener("click", () => showView("admin"));
 $("mLogout").addEventListener("click", doLogout);
 
 $("goFind").addEventListener("click", () => showView("find"));
-$("goMine").addEventListener("click", () => showView("mine"));
+$("goMine").addEventListener("click", () => { if (needVerify("rent")) return; showView("mine"); });
 $("backFind").addEventListener("click", () => showView("home"));
 $("backFavs").addEventListener("click", () => showView("home"));
 $("backNotices").addEventListener("click", () => showView("home"));
