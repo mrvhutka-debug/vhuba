@@ -7,6 +7,7 @@ import en from "./en.js";
 import hi from "./hi.js";
 import ne from "./ne.js";
 import X from "./x.js";
+import Y from "./x2.js";
 import { initSettings } from "./settings.js";
 import { initAdmin } from "./admin.js";
 
@@ -17,29 +18,16 @@ const SUPPORT_WA = "";
 const SUPPORT_EMAIL = "";
 
 const T = {
-  en: Object.assign({}, en, X.en),
-  hi: Object.assign({}, hi, X.hi),
-  ne: Object.assign({}, ne, X.ne)
+  en: Object.assign({}, en, X.en, Y.en),
+  hi: Object.assign({}, hi, X.hi, Y.hi),
+  ne: Object.assign({}, ne, X.ne, Y.ne)
 };
 
-const X2 = {
-  en: {
-    descPh: "Description (optional): facilities, rules, nearby places...",
-    stAdminHidden: "Hidden by Vhuba admin"
-  },
-  hi: {
-    descPh: "विवरण (वैकल्पिक): सुविधाएँ, नियम, आस-पास की जगहें...",
-    stAdminHidden: "Vhuba एडमिन ने छुपाया"
-  },
-  ne: {
-    descPh: "विवरण (ऐच्छिक): सुविधा, नियम, नजिकका ठाउँ...",
-    stAdminHidden: "Vhuba एडमिनले लुकाएको"
-  }
+const TITLE_KEY = {
+  home: "navHome", find: "navFind", favs: "navFavs", notices: "navNotices",
+  mine: "navMine", settings: "navSettings", admin: "navAdmin"
 };
-["en", "hi", "ne"].forEach((l) => Object.assign(T[l], X2[l]));
-
-const TITLE_KEY = { home: "navHome", find: "navFind", favs: "navFavs", mine: "navMine", settings: "navSettings", admin: "navAdmin" };
-const VIEWS = ["home", "find", "favs", "mine", "settings", "admin"];
+const VIEWS = ["home", "find", "favs", "notices", "mine", "settings", "admin"];
 const DAY = 24 * 60 * 60 * 1000;
 const LIFE_DAYS = 30;
 const REPORT_LIMIT = 3;
@@ -59,8 +47,13 @@ let isAdmin = false;
 let resendBusy = false;
 let currentView = "home";
 let roomsData = [];
+let pubMap = new Map();
+let mineMap = new Map();
+let notices = [];
 let unsubRooms = null;
 let unsubVer = null;
+let unsubNotices = null;
+let hbTimer = null;
 let verifiedSet = new Set();
 let reportingId = null;
 let seenBefore = Date.now();
@@ -129,6 +122,7 @@ function showView(v) {
   $("pageTitle").textContent = T[lang][TITLE_KEY[v]];
   closeMenu();
   if (v === "admin") admin.load();
+  if (v === "notices") { renderNotices(); markNoticesRead(); }
   if (v === "find" && profile) {
     seenBefore = profile.lastSeen || Date.now();
     profile.lastSeen = Date.now();
@@ -155,6 +149,31 @@ function authError(code) {
     "auth/unauthorized-domain": "This website address is not allowed in Firebase yet."
   };
   return map[code] || "Something went wrong. Please try again.";
+}
+
+/* ---------- ANALYTICS HELPERS (events and activity) ---------- */
+async function logEvent(type, roomId) {
+  try {
+    if (!auth.currentUser) return;
+    const d = { type: type, uid: auth.currentUser.uid, createdAt: serverTimestamp() };
+    if (roomId) d.roomId = roomId;
+    await addDoc(collection(db, "events"), d);
+  } catch (e) {}
+}
+
+function beat() {
+  if (!auth.currentUser || !profile || document.visibilityState !== "visible") return;
+  updateDoc(uref(), { lastActive: serverTimestamp() }).catch(function () {});
+}
+
+function startHeartbeat() {
+  stopHeartbeat();
+  beat();
+  hbTimer = setInterval(beat, 120000);
+}
+
+function stopHeartbeat() {
+  if (hbTimer) { clearInterval(hbTimer); hbTimer = null; }
 }
 
 /* Keep the account email and its verified status on the user's profile, so admins can see them.
@@ -205,14 +224,17 @@ async function doAuth() {
       try { await sendEmailVerification(cred.user); } catch (e) {}
       profile = {
         name: name, phone: phone, email: cred.user.email || "", emailVerified: false,
-        lang: "", accepted: false, hidePhone: false, favs: [], lastSeen: Date.now()
+        lang: "", accepted: false, hidePhone: false, favs: [], lastSeen: Date.now(),
+        createdAt: serverTimestamp(), lastActive: serverTimestamp()
       };
       await setDoc(doc(db, "users", cred.user.uid), profile);
+      logEvent("signup");
       signingUp = false;
       $("aPass").value = "";
       route();
     } else {
       await signInWithEmailAndPassword(auth, email, pass);
+      logEvent("login");
       $("aPass").value = "";
     }
   } catch (e) {
@@ -223,6 +245,8 @@ async function doAuth() {
 }
 
 async function doLogout() {
+  await logEvent("logout");
+  stopHeartbeat();
   stopRooms();
   profile = null;
   isAdmin = false;
@@ -282,8 +306,12 @@ const settings = initSettings({
 const admin = initAdmin({
   $: $,
   esc: esc,
+  isAdmin: () => isAdmin,
   getRooms: () => roomsData,
   getUid: () => auth.currentUser.uid,
+  getProfile: () => profile,
+  getVerified: () => verifiedSet,
+  logout: doLogout,
   country: roomCountry,
   fmt: (r) => money(r.price, CUR[roomCountry(r)]),
   fmtDep: (r) => (r.deposit === undefined || r.deposit === null)
@@ -317,11 +345,13 @@ function route() {
   showView("home");
   show("appScreen");
   startRooms();
+  startHeartbeat();
 }
 
 onAuthStateChanged(auth, async (user) => {
   if (signingUp) return;
   if (!user) {
+    stopHeartbeat();
     stopRooms();
     profile = null;
     isAdmin = false;
@@ -336,7 +366,8 @@ onAuthStateChanged(auth, async (user) => {
     } else {
       profile = {
         name: user.email, phone: "", email: user.email || "", emailVerified: false,
-        lang: "", accepted: false, hidePhone: false, favs: [], lastSeen: Date.now()
+        lang: "", accepted: false, hidePhone: false, favs: [], lastSeen: Date.now(),
+        createdAt: serverTimestamp(), lastActive: serverTimestamp()
       };
       await setDoc(ref, profile);
     }
@@ -353,6 +384,8 @@ onAuthStateChanged(auth, async (user) => {
     $("aMsg").textContent = "Could not load your account. Check internet and Firebase rules.";
   }
 });
+
+document.addEventListener("visibilitychange", beat);
 
 /* ---------- LANGUAGE + POLICY ---------- */
 async function chooseLang(l) {
@@ -447,6 +480,7 @@ function applyLang() {
   buildPriceFilters();
   updateCurrencyUI();
   setupSupport(t);
+  updateNoticeBadge();
   render();
 }
 
@@ -461,10 +495,13 @@ function lastUpdate(r) {
 function daysLeft(r) {
   return Math.ceil((lastUpdate(r) + LIFE_DAYS * DAY - Date.now()) / DAY);
 }
+function apOf(r) { return r.approval || "none"; }
 function isExpired(r) { return daysLeft(r) <= 0; }
 function isReported(r) { return (r.reportCount || 0) >= REPORT_LIMIT; }
 function isRented(r) { return r.status === "rented"; }
-function isLive(r) { return !isRented(r) && !isExpired(r) && !isReported(r) && !r.hidden; }
+function isLive(r) {
+  return apOf(r) === "approved" && !isRented(r) && !isExpired(r) && !isReported(r) && !r.hidden;
+}
 function hasLoc(r) { return typeof r.lat === "number" && typeof r.lng === "number"; }
 
 /* ---------- LOCATION ---------- */
@@ -723,30 +760,117 @@ async function toggleFav(id) {
   }
 }
 
+/* ---------- NOTIFICATIONS (messages from admin about your rooms) ---------- */
+const nms = (n) => (n.createdAt && n.createdAt.toMillis) ? n.createdAt.toMillis() : 0;
+
+function updateNoticeBadge() {
+  const n = notices.filter((x) => !x.read).length;
+  $("mNotices").textContent = T[lang].navNotices + (n ? " (" + n + ")" : "");
+}
+
+function renderNotices() {
+  const t = T[lang];
+  const list = notices.slice().sort((a, b) => nms(b) - nms(a));
+  let h = "";
+  list.forEach((n) => {
+    const base = (t["n_" + n.kind] || "").replace("{title}", n.roomTitle || "");
+    h += '<div class="card" style="margin:12px 0"><p>' + esc(base) + '</p>' +
+      (n.reason ? '<p>' + esc(t.reasonLabel) + ': ' + esc(n.reason) + '</p>' : '') +
+      '<p class="mini">' + esc(n.createdAt && n.createdAt.toDate ? n.createdAt.toDate().toLocaleString() : "") + '</p></div>';
+  });
+  $("noticeList").innerHTML = h || '<div class="empty">' + esc(t.noNotices) + '</div>';
+}
+
+async function markNoticesRead() {
+  const un = notices.filter((n) => !n.read);
+  if (!un.length) return;
+  try {
+    const b = writeBatch(db);
+    un.forEach((n) => b.update(doc(db, "notices", n.id), { read: true }));
+    await b.commit();
+  } catch (e) {}
+}
+
 /* ---------- ROOMS ---------- */
 function startRooms() {
-  if (unsubRooms) return;
-  const q = query(collection(db, "rooms"), orderBy("createdAt", "desc"), limit(100));
-  unsubRooms = onSnapshot(q, (snap) => {
-    roomsData = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  if (unsubRooms || !auth.currentUser) return;
+  const uid = auth.currentUser.uid;
+  const toList = (snap) => new Map(snap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
+  const apply = () => {
+    const m = new Map(pubMap);
+    mineMap.forEach((v, k) => m.set(k, v));
+    roomsData = Array.from(m.values());
     render();
-  }, () => {
+  };
+  const onErr = () => {
     const msg = '<div class="empty">Could not load rooms. Check internet and Firebase rules.</div>';
     $("list").innerHTML = msg;
     $("favList").innerHTML = msg;
     $("myList").innerHTML = msg;
-  });
+  };
+
+  if (isAdmin) {
+    unsubRooms = onSnapshot(query(collection(db, "rooms"), limit(300)), (snap) => {
+      pubMap = toList(snap);
+      mineMap = new Map();
+      apply();
+    }, onErr);
+  } else {
+    const u1 = onSnapshot(query(collection(db, "rooms"), where("approval", "==", "approved"), limit(150)), (snap) => {
+      pubMap = toList(snap);
+      apply();
+    }, onErr);
+    const u2 = onSnapshot(query(collection(db, "rooms"), where("uid", "==", uid)), (snap) => {
+      mineMap = toList(snap);
+      apply();
+    }, onErr);
+    unsubRooms = () => { u1(); u2(); };
+  }
+
   unsubVer = onSnapshot(collection(db, "verified"), (snap) => {
     verifiedSet = new Set(snap.docs.map((d) => d.id));
     render();
+  }, function () {});
+
+  unsubNotices = onSnapshot(query(collection(db, "notices"), where("toUid", "==", uid), limit(50)), (snap) => {
+    notices = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    updateNoticeBadge();
+    if (currentView === "notices") renderNotices();
   }, function () {});
 }
 
 function stopRooms() {
   if (unsubRooms) { unsubRooms(); unsubRooms = null; }
   if (unsubVer) { unsubVer(); unsubVer = null; }
+  if (unsubNotices) { unsubNotices(); unsubNotices = null; }
   verifiedSet = new Set();
+  pubMap = new Map();
+  mineMap = new Map();
+  notices = [];
   roomsData = [];
+}
+
+function checksHtml(r, t) {
+  const photo = Array.isArray(r.photos) && r.photos.length >= 1;
+  const emailOk = !!(auth.currentUser && auth.currentUser.emailVerified);
+  const nameOk = !!(profile && String(profile.name || "").trim().length >= 2);
+  const line = (ok, txt) => '<p class="hint" style="padding:2px 0">' + (ok ? "✔ " : "✘ ") + esc(txt) + '</p>';
+  return '<p class="hint" style="padding:6px 0 0"><b>' + esc(t.chkTitle) + '</b></p>' +
+    line(photo, t.chkPhoto) + line(emailOk, t.chkEmail) + line(nameOk, t.chkName) + line(false, t.chkPhone) +
+    (photo ? '' : '<p class="hint" style="padding:2px 0">' + esc(t.noPhotoWarn) + '</p>');
+}
+
+function approvalBlock(r, t) {
+  const a = apOf(r);
+  const label = a === "pending" ? t.stPending : a === "needs_review" ? t.stNeedsReview : t.stRejected;
+  const cls = a === "rejected" ? "tag bad" : a === "needs_review" ? "tag new" : "tag";
+  let h = '<span class="' + cls + '">' + esc(label) + '</span>';
+  if (a === "pending") h += '<p class="hint" style="padding:6px 0">' + esc(t.pendingMsg) + '</p>';
+  if (r.approvalReason && (a === "needs_review" || a === "rejected")) {
+    h += '<p>' + esc(t.reasonLabel) + ': ' + esc(r.approvalReason) + '</p>';
+  }
+  if (a === "pending" || a === "needs_review") h += checksHtml(r, t);
+  return h;
 }
 
 function cardTop(r, t) {
@@ -754,6 +878,8 @@ function cardTop(r, t) {
   const cur = CUR[c];
   const exTag = (r.extras && t[r.extras]) ? '<span class="tag">' + esc(t[r.extras]) + '</span>' : '';
   const verTag = verifiedSet.has(r.uid) ? '<span class="tag ok">' + esc(t.verified) + '</span>' : '';
+  const apTag = (apOf(r) === "approved" && r.approvalBy && r.approvalBy !== "legacy")
+    ? '<span class="tag ok">✔ ' + esc(t.stApproved) + '</span>' : '';
   const ownTag = r.ownerType === "owner" ? '<span class="tag">' + esc(t.tagOwner) + '</span>'
     : r.ownerType === "broker" ? '<span class="tag bad">' + esc(t.tagBroker) + '</span>' : '';
   const ctTag = '<span class="tag">' + esc(t["tag" + c]) + '</span>';
@@ -765,7 +891,7 @@ function cardTop(r, t) {
   const desc = r.description ? '<p>' + esc(r.description) + '</p>' : '';
   return '<h3>' + esc(r.title || "") + '</h3>' +
     '<span class="tag">' + esc(t[r.type] || "") + '</span>' +
-    '<span class="tag">' + esc(t[r.loc] || "") + '</span>' + ctTag + exTag + ownTag + verTag + distTag +
+    '<span class="tag">' + esc(t[r.loc] || "") + '</span>' + ctTag + exTag + ownTag + apTag + verTag + distTag +
     '<p>' + esc(t.areaLabel) + ': ' + esc(r.area || "") + '</p>' +
     '<p class="price">' + esc(money(r.price, cur)) + ' ' + esc(t.perMonth) + '</p>' + dep + desc +
     photosHtml(r);
@@ -797,6 +923,11 @@ function render() {
   const myUid = auth.currentUser ? auth.currentUser.uid : "";
   const favs = (profile && profile.favs) || [];
   const saved = profile && profile.savedSearch;
+
+  if (isAdmin) {
+    const pc = roomsData.filter((r) => { const a = apOf(r); return a === "pending" || a === "needs_review"; }).length;
+    $("mAdmin").textContent = t.navAdmin + (pc ? " (" + pc + ")" : "");
+  }
 
   $("ssText").textContent = saved ? describe(normSaved(saved), t) : t.ssNone;
   $("ssApply").style.display = saved ? "block" : "none";
@@ -851,6 +982,12 @@ function render() {
     if (r.uid !== myUid) return;
     mcount++;
     const id = esc(r.id);
+    const ap = apOf(r);
+    if (ap === "pending" || ap === "needs_review" || ap === "rejected") {
+      mhtml += '<div class="card">' + cardTop(r, t) + '<div>' + approvalBlock(r, t) + '</div>' +
+        '<button class="del" data-del="' + id + '">' + esc(t.del) + '</button></div>';
+      return;
+    }
     let badge = "";
     let btns = "";
     if (r.hidden) {
@@ -874,6 +1011,8 @@ function render() {
   });
   if (mcount === 0) mhtml = '<div class="empty">' + esc(t.noMine) + '</div>';
   $("myList").innerHTML = mhtml;
+
+  if (isAdmin && currentView === "admin") admin.onRooms();
 }
 
 async function addRoom() {
@@ -897,19 +1036,34 @@ async function addRoom() {
   if (!(deposit >= 0)) { alert(t.badDeposit); return; }
   if (!hide && !/^[0-9]{10}$/.test(phone)) { alert(t.badPhone); return; }
 
-  const data = {
-    title: title, area: area, loc: loc, country: country, currency: CUR[country],
-    price: price, deposit: deposit, extras: extras,
-    ownerType: ownerType, type: type, cc: cc, phone: hide ? "" : phone,
-    status: "available", reportCount: 0,
-    uid: auth.currentUser.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
-  };
-  if (desc) data.description = desc;
-  if (pendingPhotos.length) data.photos = pendingPhotos.slice(0, MAX_PHOTOS);
-  if (pendingLoc) { data.lat = pendingLoc.lat; data.lng = pendingLoc.lng; }
-
   $("addBtn").disabled = true;
   try {
+    /* Every room starts as pending. The automatic path only works if the login itself carries a
+       phone number verified by OTP, and the database rules double-check it. Today nobody can
+       reach it, because phone OTP login is not added yet. */
+    let approval = "pending";
+    let approvalBy = "system";
+    try {
+      const tk = await auth.currentUser.getIdTokenResult();
+      if (tk.claims.phone_number && pendingPhotos.length >= 1 && String(profile.name || "").trim().length >= 2) {
+        approval = "approved";
+        approvalBy = "auto";
+      }
+    } catch (e) {}
+
+    const data = {
+      title: title, area: area, loc: loc, country: country, currency: CUR[country],
+      price: price, deposit: deposit, extras: extras,
+      ownerType: ownerType, type: type, cc: cc, phone: hide ? "" : phone,
+      status: "available", reportCount: 0,
+      approval: approval, approvalBy: approvalBy,
+      uid: auth.currentUser.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+    };
+    if (approval === "approved") data.approvalAt = serverTimestamp();
+    if (desc) data.description = desc;
+    if (pendingPhotos.length) data.photos = pendingPhotos.slice(0, MAX_PHOTOS);
+    if (pendingLoc) { data.lat = pendingLoc.lat; data.lng = pendingLoc.lng; }
+
     const myUid = auth.currentUser.uid;
     const snap = await getDocs(query(collection(db, "rooms"), where("uid", "==", myUid)));
     const used = new Set(snap.docs.map((d) => d.id));
@@ -920,7 +1074,9 @@ async function addRoom() {
     if (snap.size >= MAX_ROOMS || !slot) {
       alert(t.limit5);
     } else {
-      await setDoc(doc(db, "rooms", myUid + "_" + slot), data);
+      const rid = myUid + "_" + slot;
+      await setDoc(doc(db, "rooms", rid), data);
+      logEvent("room_added", rid);
       $("title").value = "";
       $("area").value = "";
       $("price").value = "";
@@ -932,7 +1088,7 @@ async function addRoom() {
       pendingPhotos = [];
       showPreviews();
       clearLocation();
-      alert(t.added);
+      alert(approval === "approved" ? t.addedApproved : t.addedPending);
     }
   } catch (e) {
     alert(t.errGeneric + " (" + (e.code || e.message) + ")");
@@ -1008,6 +1164,7 @@ async function sendReport() {
     });
     batch.update(doc(db, "rooms", id), { reportCount: (r.reportCount || 0) + 1 });
     await batch.commit();
+    logEvent("room_reported", id);
     alert(t.reportRoomDone);
     closeReport();
   } catch (e) {
@@ -1050,6 +1207,7 @@ $("menuBtn").addEventListener("click", openMenu);
 $("menuOverlay").addEventListener("click", closeMenu);
 $("mHome").addEventListener("click", () => showView("home"));
 $("mFavs").addEventListener("click", () => showView("favs"));
+$("mNotices").addEventListener("click", () => showView("notices"));
 $("mSettings").addEventListener("click", () => { settings.sync(); showView("settings"); });
 $("mAdmin").addEventListener("click", () => showView("admin"));
 $("mLogout").addEventListener("click", doLogout);
@@ -1058,6 +1216,7 @@ $("goFind").addEventListener("click", () => showView("find"));
 $("goMine").addEventListener("click", () => showView("mine"));
 $("backFind").addEventListener("click", () => showView("home"));
 $("backFavs").addEventListener("click", () => showView("home"));
+$("backNotices").addEventListener("click", () => showView("home"));
 $("backMine").addEventListener("click", () => showView("home"));
 $("backHome").addEventListener("click", () => showView("home"));
 $("backAdmin").addEventListener("click", () => showView("home"));

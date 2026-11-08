@@ -1,11 +1,12 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged,
-  sendEmailVerification, EmailAuthProvider, reauthenticateWithCredential, updatePassword, deleteUser
+  sendEmailVerification, sendPasswordResetEmail, EmailAuthProvider, reauthenticateWithCredential,
+  updatePassword, deleteUser
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, addDoc, getDocs,
-  onSnapshot, query, where, orderBy, limit, serverTimestamp, writeBatch
+  onSnapshot, query, where, orderBy, limit, serverTimestamp, writeBatch, getCountFromServer
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -23,7 +24,8 @@ export const db = getFirestore(app);
 
 export {
   createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged,
-  sendEmailVerification, EmailAuthProvider, reauthenticateWithCredential, updatePassword, deleteUser,
+  sendEmailVerification, sendPasswordResetEmail, EmailAuthProvider, reauthenticateWithCredential,
+  updatePassword, deleteUser,
   doc, getDoc, setDoc, updateDoc, deleteDoc, collection, addDoc, getDocs,
-  onSnapshot, query, where, orderBy, limit, serverTimestamp, writeBatch
+  onSnapshot, query, where, orderBy, limit, serverTimestamp, writeBatch, getCountFromServer
 };
