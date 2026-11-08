@@ -4,9 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vhuba</title>
+<link rel="preload" as="image" href="splash.jpg">
 <link rel="stylesheet" href="style.css">
+<style>
+#splash{position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;background-color:#0044fb;background-image:url(splash.jpg),linear-gradient(#1784fe,#0044fb 50%,#0026d1);background-size:cover,100% 100%;background-position:center,center;background-repeat:no-repeat,no-repeat;transition:opacity .5s ease}
+#splash.off{opacity:0;pointer-events:none}
+@media (min-aspect-ratio:3/4){#splash{background-size:contain,100% 100%}}
+</style>
 </head>
 <body>
+<div id="splash" aria-hidden="true"></div>
 <header>Vhuba</header>
 
 <div id="loading">Loading...</div>
@@ -331,5 +338,33 @@
 </div>
 
 <script type="module" src="app.js"></script>
+<script>
+/* Splash screen: stays on top until the app shows its first real screen
+   (Welcome, Login or Home). It stays at least MIN milliseconds so the logo is seen.
+   Set MIN to 0 if you do not want any minimum. After 12 seconds it goes away anyway,
+   so a problem can never hide the app forever. */
+(function () {
+  var splash = document.getElementById("splash");
+  var loading = document.getElementById("loading");
+  var MIN = 1200;
+  var start = Date.now();
+  var done = false;
+  function hide() {
+    if (done || !splash) return;
+    done = true;
+    var wait = Math.max(0, MIN - (Date.now() - start));
+    setTimeout(function () {
+      splash.className = "off";
+      setTimeout(function () { splash.style.display = "none"; }, 600);
+    }, wait);
+  }
+  if (loading) {
+    new MutationObserver(function () {
+      if (loading.style.display === "none") hide();
+    }).observe(loading, { attributes: true, attributeFilter: ["style"] });
+  }
+  setTimeout(hide, 12000);
+})();
+</script>
 </body>
 </html>
