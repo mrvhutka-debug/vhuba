@@ -25,7 +25,8 @@ const LOG_L = {
   room_hide: "Room hidden", room_restore: "Room restored", room_remove: "Room removed",
   verify_owner: "Owner verified", unverify_owner: "Owner verification removed",
   fix_old_rooms: "Old rooms fixed", report_reviewed: "Report marked reviewed",
-  report_resolved: "Report marked resolved", report_rejected: "Report rejected"
+  report_resolved: "Report marked resolved", report_rejected: "Report rejected",
+  user_block: "User blocked", user_unblock: "User unblocked"
 };
 const TAB_IDS = ["overview", "reports", "rooms", "users", "approval", "security", "profile", "activity"];
 const PHOTO_OK = /^data:image\/jpeg;base64,[A-Za-z0-9+\/=]+$/;
@@ -43,6 +44,7 @@ export function initAdmin(c) {
   let rQuery = "";
   let uQuery = "";
   let usersAll = [];
+  let blockedSet = new Set();
   let rmToken = 0;
   try { current = localStorage.getItem("vhubaAdminTab") || "overview"; } catch (e) {}
   if (TAB_IDS.indexOf(current) === -1) current = "overview";
@@ -190,6 +192,7 @@ export function initAdmin(c) {
     await batch.commit();
     return true;
   }
+
   async function verifyUser(uid, on) {
     const batch = writeBatch(db);
     if (on) batch.set(doc(db, "verified", uid), { ok: true });
@@ -198,6 +201,39 @@ export function initAdmin(c) {
       action: on ? "verify_owner" : "unverify_owner", targetType: "user", targetId: uid, reason: ""
     }));
     await batch.commit();
+  }
+
+  /* Block: the person cannot add rooms or send reports, their rooms are hidden, and they are logged out when they open the app. */
+  async function blockUser(uid) {
+    if (uid === c.getUid()) { alert("You cannot block yourself."); return false; }
+    const ans = prompt("Block this user - reason (required, only admins see it):", "");
+    if (ans === null) return false;
+    const reason = ans.trim().slice(0, 300);
+    if (reason.length < 3) { alert("Please write a reason."); return false; }
+    const mine = c.getRooms().filter((r) => r.uid === uid);
+    const b = writeBatch(db);
+    b.set(doc(db, "blocked", uid), { reason: reason, by: c.getUid(), createdAt: serverTimestamp() });
+    mine.forEach((r) => { b.update(doc(db, "rooms", r.id), { hidden: true, hiddenReason: "Account blocked" }); });
+    b.set(doc(collection(db, "adminLogs")), logDoc({
+      action: "user_block", targetType: "user", targetId: uid, ownerId: uid, reason: reason
+    }));
+    await b.commit();
+    blockedSet.add(uid);
+    return true;
+  }
+
+  async function unblockUser(uid) {
+    if (!confirm("Unblock this user? Their rooms hidden because of the block will show again.")) return false;
+    const mine = c.getRooms().filter((r) => r.uid === uid && r.hidden === true && r.hiddenReason === "Account blocked");
+    const b = writeBatch(db);
+    b.delete(doc(db, "blocked", uid));
+    mine.forEach((r) => { b.update(doc(db, "rooms", r.id), { hidden: false, hiddenReason: "" }); });
+    b.set(doc(collection(db, "adminLogs")), logDoc({
+      action: "user_unblock", targetType: "user", targetId: uid, ownerId: uid, reason: ""
+    }));
+    await b.commit();
+    blockedSet.delete(uid);
+    return true;
   }
 
   async function setReportStatus(id, st) {
@@ -365,7 +401,8 @@ export function initAdmin(c) {
     h += '</div>';
     if (rep.type === "room" && room) {
       h += roomButtons(Object.assign({ id: rep.roomId }, room), rep.id);
-      if (rep.ownerId) h += '<div style="' + LINE + '"><button class="act" data-a="uver" data-uid="' + esc(rep.ownerId) + '">Verify this owner</button></div>';
+      if (rep.ownerId) h += '<div style="' + LINE + '"><button class="act" data-a="uver" data-uid="' + esc(rep.ownerId) + '">Verify this owner</button>' +
+        '<button class="del" data-a="ublock" data-uid="' + esc(rep.ownerId) + '">Block this owner</button></div>';
     }
     return h;
   }
@@ -479,6 +516,10 @@ export function initAdmin(c) {
       const snap = await getDocs(query(collection(db, "users"), limit(500)));
       usersAll = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       usersAll.sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
+      try {
+        const bs = await getDocs(collection(db, "blocked"));
+        blockedSet = new Set(bs.docs.map((d) => d.id));
+      } catch (e) {}
       renderUsers();
     } catch (e) {
       if ($("usList")) $("usList").innerHTML = '<div class="empty">Could not load users. Check rules and admin setup.</div>';
@@ -498,8 +539,10 @@ export function initAdmin(c) {
     let html = "";
     list.slice(0, SHOW_MAX).forEach((u) => {
       const isV = ver.has(u.id);
+      const isB = blockedSet.has(u.id);
       const rc2 = rooms.filter((r) => r.uid === u.id).length;
       html += '<div class="card" style="margin:12px 0"><h3 style="padding-right:0">' + esc(u.name || "-") + '</h3>' +
+        (isB ? tag("Blocked", "bad") : "") +
         (isV ? tag("✔ Verified owner", "ok") : "") +
         (u.emailVerified === true ? tag("Email verified", "ok") : tag("Email not verified", "bad")) +
         (u.phoneVerified === true ? tag("Phone verified", "ok") : tag("Phone not verified")) +
@@ -513,6 +556,9 @@ export function initAdmin(c) {
         (isV
           ? '<button class="act gray" data-a="uunver" data-uid="' + esc(u.id) + '">Remove verified mark</button>'
           : '<button class="act" data-a="uver" data-uid="' + esc(u.id) + '">Verify this owner</button>') +
+        (isB
+          ? '<button class="act" data-a="uunblock" data-uid="' + esc(u.id) + '">Unblock user</button>'
+          : (u.id === c.getUid() ? '' : '<button class="del" data-a="ublock" data-uid="' + esc(u.id) + '">Block user</button>')) +
         '</div></div>';
     });
     box.innerHTML = html || '<div class="empty">No users found.</div>';
@@ -689,6 +735,15 @@ export function initAdmin(c) {
           if (current === "security") await securityTab();
           else if (current === "users") renderUsers();
         }
+      } else if (a === "ublock") {
+        const ok = await blockUser(g("data-uid"));
+        if (ok) {
+          alert("User blocked and their rooms hidden.");
+          if (current === "users") renderUsers(); else await load();
+        }
+      } else if (a === "uunblock") {
+        const ok = await unblockUser(g("data-uid"));
+        if (ok) { if (current === "users") renderUsers(); else await load(); }
       } else if (a === "vadd") {
         const id = ($("vidInput").value || "").trim();
         if (!id) { alert("Paste the owner ID first."); }

@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vhuba</title>
+<meta name="theme-color" content="#2563eb">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <link rel="preload" as="image" href="splash.jpg">
 <link rel="stylesheet" href="style.css">
 <style>
@@ -59,6 +64,7 @@
     <input id="aPass" type="password" placeholder="Password (min 6 characters)">
     <div id="aMsg" class="msg"></div>
     <button id="aBtn" type="button">Login</button>
+    <button id="aForgot" class="langbtn" type="button" style="font-size:16px">Forgot password?</button>
     <button id="aBack" class="gray" type="button">Back</button>
   </div></div>
 </div>
@@ -131,6 +137,42 @@
       <textarea id="reportDetails" maxlength="1000" data-ph="reportDetailsPh"></textarea>
       <button id="reportSendBtn" class="red" data-i18n="reportSend"></button>
       <button id="reportCancel" class="gray" data-i18n="cancel"></button>
+    </div>
+  </div>
+
+  <div id="editModal" class="modal">
+    <div class="modalbox" style="max-height:88vh;overflow-y:auto">
+      <h3 class="title" data-i18n="editTitle"></h3>
+      <input id="edTitle" data-ph="roomName">
+      <input id="edArea" data-ph="area">
+      <input id="edCity" data-ph="cityPh">
+      <select id="edLoc">
+        <option value="highway" data-i18n="highway"></option>
+        <option value="gali" data-i18n="gali"></option>
+      </select>
+      <select id="edType">
+        <option value="single" data-i18n="single"></option>
+        <option value="shared" data-i18n="shared"></option>
+        <option value="bhk" data-i18n="bhk"></option>
+      </select>
+      <input id="edPrice" type="number">
+      <input id="edDeposit" type="number">
+      <select id="edExtras">
+        <option value="" data-i18n="exPick"></option>
+        <option value="exIncl" data-i18n="exIncl"></option>
+        <option value="exElec" data-i18n="exElec"></option>
+        <option value="exBoth" data-i18n="exBoth"></option>
+        <option value="exOther" data-i18n="exOther"></option>
+      </select>
+      <select id="edOwnerType">
+        <option value="" data-i18n="ownerPick"></option>
+        <option value="owner" data-i18n="oOwner"></option>
+        <option value="broker" data-i18n="oBroker"></option>
+      </select>
+      <textarea id="edDesc" maxlength="500" data-ph="descPh"></textarea>
+      <p class="hint" style="padding:0 0 10px 0" data-i18n="editNote"></p>
+      <button id="edSave" data-i18n="editSave"></button>
+      <button id="edCancel" class="gray" data-i18n="cancel"></button>
     </div>
   </div>
 
@@ -240,7 +282,6 @@
       <option value="" data-i18n="pfNotSet"></option>
       <option value="IN" data-i18n="pfIN"></option>
       <option value="NP" data-i18n="pfNP"></option>
-    </select>
     <label class="check">
       <input type="checkbox" id="pfShowCountry">
       <span data-i18n="pfShowCountry"></span>
@@ -266,9 +307,6 @@
       <button id="pvConfirm" class="act" type="button" data-i18n="pvConfirm"></button>
     </div>
     <div id="pvCaptcha"></div>
-    <div id="pvMsg" class="msg"></div>
-    <div id="pvInfo" class="ok2"></div>
-
     <label class="lbl" data-i18n="rowLang"></label>
     <select id="pfLang">
       <option value="en">English</option>
@@ -303,6 +341,7 @@
     <h3 class="title" data-i18n="addTitle"></h3>
     <input id="title" data-ph="roomName">
     <input id="area" data-ph="area">
+    <input id="city" data-ph="cityPh">
     <select id="loc">
       <option value="highway" data-i18n="highway"></option>
       <option value="gali" data-i18n="gali"></option>
@@ -430,6 +469,14 @@
 </div>
 
 <script type="module" src="app.js"></script>
+<script>
+/* Install as an app: lets the phone offer "Add to Home screen". */
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", function () {
+    navigator.serviceWorker.register("sw.js").catch(function () {});
+  });
+}
+</script>
 <script>
 /* Splash screen: stays on top until the app shows its first real screen
    (Welcome, Login or Home). It stays at least MIN milliseconds so the logo is seen.

@@ -1,6 +1,6 @@
 import {
   auth, db, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged,
-  sendEmailVerification, GoogleAuthProvider, signInWithPopup,
+  sendEmailVerification, sendPasswordResetEmail, GoogleAuthProvider, signInWithPopup,
   PhoneAuthProvider, RecaptchaVerifier, updatePhoneNumber, linkWithCredential,
   doc, getDoc, setDoc, updateDoc, collection, addDoc, deleteDoc, getDocs, where,
   onSnapshot, query, orderBy, limit, serverTimestamp, writeBatch
@@ -11,6 +11,7 @@ import ne from "./ne.js";
 import X from "./x.js";
 import Y from "./x2.js";
 import Z from "./x3.js";
+import W from "./x4.js";
 import { initSettings } from "./settings.js";
 import { initAdmin } from "./admin.js";
 
@@ -26,9 +27,9 @@ const SUPPORT_EMAIL = "";
 const REQUIRE_PHONE_FOR_OWNERS = false;
 
 const T = {
-  en: Object.assign({}, en, X.en, Y.en, Z.en),
-  hi: Object.assign({}, hi, X.hi, Y.hi, Z.hi),
-  ne: Object.assign({}, ne, X.ne, Y.ne, Z.ne)
+  en: Object.assign({}, en, X.en, Y.en, Z.en, W.en),
+  hi: Object.assign({}, hi, X.hi, Y.hi, Z.hi, W.hi),
+  ne: Object.assign({}, ne, X.ne, Y.ne, Z.ne, W.ne)
 };
 
 const TITLE_KEY = {
@@ -41,6 +42,7 @@ const LIFE_DAYS = 30;
 const REPORT_LIMIT = 3;
 const MAX_PHOTOS = 2;
 const MAX_ROOMS = 5;
+const PAGE = 20;
 const CUR = { IN: "INR", NP: "NPR" };
 const BUDGETS = { IN: [3000, 3500, 4000, 5000], NP: [5000, 8000, 10000, 15000] };
 const DEPOSITS = { IN: [5000, 10000], NP: [8000, 16000] };
@@ -52,6 +54,7 @@ let tab = "login";
 let profile = null;
 let signingUp = false;
 let isAdmin = false;
+let isBlocked = false;
 let resendBusy = false;
 let afterVerify = "";
 let verifySentFor = "";
@@ -66,6 +69,9 @@ let unsubNotices = null;
 let hbTimer = null;
 let verifiedSet = new Set();
 let reportingId = null;
+let editingId = null;
+let listLimit = PAGE;
+let lastFk = "";
 let seenBefore = Date.now();
 let ssAutoDone = false;
 let pendingPhotos = [];
@@ -242,6 +248,15 @@ async function checkAdmin() {
   }
 }
 
+/* A blocked account is told so and logged out (see route). Only the admin can block. */
+async function checkBlocked() {
+  isBlocked = false;
+  try {
+    const s = await getDoc(doc(db, "blocked", auth.currentUser.uid));
+    isBlocked = s.exists();
+  } catch (e) {}
+}
+
 /* ---------- PUBLIC PROFILE (the only part other people can see) ---------- */
 async function loadMyPub() {
   myPub = null;
@@ -289,6 +304,7 @@ async function prepareSession() {
   await loadMyPub();
   await syncPublicBadges();
   await checkAdmin();
+  await checkBlocked();
 }
 
 /* ---------- AUTH ---------- */
@@ -299,6 +315,7 @@ function setTab(t) {
   $("aName").style.display = (t === "signup") ? "block" : "none";
   $("aCc").style.display = (t === "signup") ? "block" : "none";
   $("aPhone").style.display = (t === "signup") ? "block" : "none";
+  $("aForgot").style.display = (t === "login") ? "block" : "none";
   $("aBtn").textContent = (t === "signup") ? "Sign up" : "Login";
   $("aMsg").textContent = "";
 }
@@ -348,6 +365,22 @@ async function doAuth() {
   $("aBtn").disabled = false;
 }
 
+/* Forgot password: sends a reset link to the email typed above. */
+async function doForgot() {
+  const msg = $("aMsg");
+  msg.textContent = "";
+  const email = $("aEmail").value.trim();
+  if (!email) { msg.textContent = "Type your email above first, then press Forgot password."; return; }
+  $("aForgot").disabled = true;
+  try {
+    await sendPasswordResetEmail(auth, email);
+    alert("We sent a password reset link to " + email + ". Check Inbox and Spam.");
+  } catch (e) {
+    msg.textContent = authError(e.code);
+  }
+  $("aForgot").disabled = false;
+}
+
 /* Continue with Google. The pop-up must open straight from the tap, so nothing async comes before it. */
 async function doGoogle() {
   const msg = $("aMsg");
@@ -393,12 +426,14 @@ async function doLogout() {
   profile = null;
   myPub = null;
   isAdmin = false;
+  isBlocked = false;
   ssAutoDone = false;
   afterVerify = "";
   verifySentFor = "";
   pvId = null;
   if (recaptcha) { try { recaptcha.clear(); } catch (e) {} recaptcha = null; }
   closeReport();
+  closeEdit();
   closeBig();
   showView("home");
   document.querySelectorAll(".sub").forEach((s) => s.classList.remove("open"));
@@ -521,8 +556,15 @@ const admin = initAdmin({
 });
 
 /* ---------- ROUTER ---------- */
+function blockedExit() {
+  const l = (profile && profile.lang) ? profile.lang : "en";
+  alert(T[l].blockedMsg);
+  doLogout();
+}
+
 function route() {
   if (!auth.currentUser || !profile) { stopRooms(); show("welcomeScreen"); return; }
+  if (isBlocked) { blockedExit(); return; }
   if (!profile.lang) { show("langScreen"); return; }
   lang = profile.lang;
   if (profile.lastSeen === undefined) {
@@ -553,6 +595,7 @@ onAuthStateChanged(auth, async (user) => {
     profile = null;
     myPub = null;
     isAdmin = false;
+    isBlocked = false;
     show("welcomeScreen");
     return;
   }
@@ -820,6 +863,7 @@ function closeBig() {
   $("bigModal").classList.remove("open");
   $("bigImg").removeAttribute("src");
 }
+
 /* ---------- FILTERS, SORT, SAVED SEARCH ---------- */
 function readFilters() {
   return {
@@ -844,7 +888,7 @@ function normSaved(f) {
 
 function matches(r, f) {
   if (f.q) {
-    const text = ((r.title || "") + " " + (r.area || "")).toLowerCase();
+    const text = ((r.title || "") + " " + (r.area || "") + " " + (r.city || "")).toLowerCase();
     if (text.indexOf(f.q) === -1) return false;
   }
   if (f.type && r.type !== f.type) return false;
@@ -1118,9 +1162,13 @@ function cardTop(r, t) {
   return '<h3>' + esc(r.title || "") + '</h3>' +
     '<span class="tag">' + esc(t[r.type] || "") + '</span>' +
     '<span class="tag">' + esc(t[r.loc] || "") + '</span>' + ctTag + exTag + ownTag + apTag + phTag + verTag + distTag +
-    '<p>' + esc(t.areaLabel) + ': ' + esc(r.area || "") + '</p>' +
+    '<p>' + esc(t.areaLabel) + ': ' + esc(r.area || "") + (r.city ? ', ' + esc(r.city) : '') + '</p>' +
     '<p class="price">' + esc(money(r.price, cur)) + ' ' + esc(t.perMonth) + '</p>' + dep + desc +
     photosHtml(r);
+}
+
+function shareBtn(r, t) {
+  return '<button class="rep" data-share="' + esc(r.id) + '">' + esc(t.shareBtn) + '</button>';
 }
 
 function contactBtns(r, t) {
@@ -1137,7 +1185,7 @@ function contactBtns(r, t) {
     h += '<a class="call map" href="https://www.google.com/maps?q=' + r.lat + ',' + r.lng +
       '" target="_blank" rel="noopener">' + esc(t.openMap) + '</a>';
   }
-  return h;
+  return h + shareBtn(r, t);
 }
 
 function ownerBtn(r, t) {
@@ -1173,14 +1221,17 @@ function render() {
   $("newBadge").style.display = n ? "inline-block" : "none";
 
   const f = readFilters();
+  const fk = JSON.stringify(f);
+  if (fk !== lastFk) { lastFk = fk; listLimit = PAGE; }
   const found = sortRooms(roomsData.filter((r) => isLive(r) && matches(r, f)), f.sort);
+  const shown = found.slice(0, listLimit);
   let html = "";
-  found.forEach((r) => {
+  shown.forEach((r) => {
     const mine = r.uid === myUid;
     html += '<div class="card">' + (mine ? '' : heartBtn(r.id, favs.indexOf(r.id) !== -1)) + cardTop(r, t);
     if (!mine && createdMs(r) > seenBefore) html += '<span class="tag new">' + esc(t.newTag) + '</span>';
     if (mine) {
-      html += '<span class="tag">' + esc(t.yours) + '</span>';
+      html += '<span class="tag">' + esc(t.yours) + '</span>' + shareBtn(r, t);
     } else {
       html += contactBtns(r, t) + ownerBtn(r, t) +
         '<button class="rep" data-rep="' + esc(r.id) + '">' + esc(t.reportRoom) + '</button>';
@@ -1188,6 +1239,10 @@ function render() {
     html += '</div>';
   });
   if (!found.length) html = '<div class="empty">' + esc(t.none) + '</div>';
+  if (found.length > listLimit) {
+    html += '<button type="button" data-more="1" style="margin:12px;width:calc(100% - 24px)">' +
+      esc(t.moreBtn) + ' (' + (found.length - listLimit) + ')</button>';
+  }
   $("list").innerHTML = html;
 
   let fhtml = "";
@@ -1218,8 +1273,9 @@ function render() {
     mcount++;
     const id = esc(r.id);
     const ap = apOf(r);
+    const editB = '<button class="act gray" data-edit="' + id + '">' + esc(t.editBtn) + '</button>';
     if (ap === "pending" || ap === "needs_review" || ap === "rejected") {
-      mhtml += '<div class="card">' + cardTop(r, t) + '<div>' + approvalBlock(r, t) + '</div>' +
+      mhtml += '<div class="card">' + cardTop(r, t) + '<div>' + approvalBlock(r, t) + '</div>' + editB +
         '<button class="del" data-del="' + id + '">' + esc(t.del) + '</button></div>';
       return;
     }
@@ -1239,9 +1295,10 @@ function render() {
       badge = '<span class="tag ok">' + esc(t.stAvail) + '</span>' +
         '<span class="tag">' + esc(t.daysLeft.replace("{n}", String(daysLeft(r)))) + '</span>';
       btns += '<button class="act" data-rent="' + id + '">' + esc(t.btnRented) + '</button>' +
-        '<button class="act gray" data-renew="' + id + '">' + esc(t.btnRenew) + '</button>';
+        '<button class="act gray" data-renew="' + id + '">' + esc(t.btnRenew) + '</button>' +
+        shareBtn(r, t);
     }
-    mhtml += '<div class="card">' + cardTop(r, t) + '<div>' + badge + '</div>' + btns +
+    mhtml += '<div class="card">' + cardTop(r, t) + '<div>' + badge + '</div>' + btns + editB +
       '<button class="del" data-del="' + id + '">' + esc(t.del) + '</button></div>';
   });
   if (mcount === 0) mhtml = '<div class="empty">' + esc(t.noMine) + '</div>';
@@ -1250,13 +1307,14 @@ function render() {
   if (isAdmin && currentView === "admin") admin.onRooms();
   if (currentView === "owner" && ownerUid) renderOwner(ownerUid);
   if (currentView === "profile") renderProfileDyn();
-  prefetchOwners(found.concat(favRooms));
+  prefetchOwners(shown.concat(favRooms));
 }
 
 async function addRoom() {
   const t = T[lang];
   const title = $("title").value.trim();
   const area = $("area").value.trim();
+  const city = $("city").value.trim().slice(0, 60);
   const loc = $("loc").value;
   const country = $("country").value;
   const price = Number($("price").value);
@@ -1269,7 +1327,7 @@ async function addRoom() {
   const phone = $("phone").value.trim();
   const hide = !!(profile && profile.hidePhone);
 
-  if (!title || !area || !country || !$("price").value.trim() || !extras || !ownerType || (!hide && !phone)) { alert(t.fillAll); return; }
+  if (!title || !area || !city || !country || !$("price").value.trim() || !extras || !ownerType || (!hide && !phone)) { alert(t.fillAll); return; }
   if (!(price > 0)) { alert(t.badPrice); return; }
   if (!(deposit >= 0)) { alert(t.badDeposit); return; }
   if (!hide && !/^[0-9]{10}$/.test(phone)) { alert(t.badPhone); return; }
@@ -1294,7 +1352,7 @@ async function addRoom() {
     if (!myPub) { try { await writePublic({}); } catch (e) {} }
 
     const data = {
-      title: title, area: area, loc: loc, country: country, currency: CUR[country],
+      title: title, area: area, city: city, loc: loc, country: country, currency: CUR[country],
       price: price, deposit: deposit, extras: extras,
       ownerType: ownerType, type: type, cc: cc, phone: hide ? "" : phone,
       status: "available", reportCount: 0,
@@ -1321,6 +1379,7 @@ async function addRoom() {
       logEvent("room_added", rid);
       $("title").value = "";
       $("area").value = "";
+      $("city").value = "";
       $("price").value = "";
       $("deposit").value = "";
       $("extras").value = "";
@@ -1363,6 +1422,101 @@ async function renewRoom(id) {
     alert(T[lang].errGeneric);
   }
 }
+
+/* ---------- SHARE A ROOM (share sheet of the phone, or WhatsApp as backup) ---------- */
+async function shareRoom(id) {
+  const r = roomsData.find((x) => x.id === id);
+  if (!r) return;
+  const t = T[lang];
+  const url = location.origin + location.pathname;
+  const text = t.shareMsg
+    .replace("{title}", r.title || "")
+    .replace("{area}", (r.area || "") + (r.city ? ", " + r.city : ""))
+    .replace("{price}", money(r.price, CUR[roomCountry(r)]));
+  try {
+    if (navigator.share) {
+      await navigator.share({ title: "Vhuba", text: text, url: url });
+      return;
+    }
+  } catch (e) {
+    if (e && e.name === "AbortError") return;
+  }
+  window.open("https://wa.me/?text=" + encodeURIComponent(text + " " + url), "_blank", "noopener");
+}
+
+/* ---------- EDIT MY ROOM ---------- */
+function openEdit(id) {
+  const r = roomsData.find((x) => x.id === id);
+  if (!r || !auth.currentUser || r.uid !== auth.currentUser.uid) return;
+  const t = T[lang];
+  const cur = CUR[roomCountry(r)];
+  editingId = id;
+  $("edTitle").value = r.title || "";
+  $("edArea").value = r.area || "";
+  $("edCity").value = r.city || "";
+  setSel("edLoc", r.loc || "highway");
+  setSel("edType", r.type || "single");
+  $("edPrice").value = (r.price === undefined || r.price === null) ? "" : r.price;
+  $("edDeposit").value = (r.deposit === undefined || r.deposit === null) ? "" : r.deposit;
+  setSel("edExtras", r.extras || "");
+  setSel("edOwnerType", r.ownerType || "");
+  $("edDesc").value = r.description || "";
+  $("edPrice").placeholder = t.rentPh2.replace("{cur}", cur);
+  $("edDeposit").placeholder = t.depositPh2.replace("{cur}", cur);
+  $("editModal").classList.add("open");
+}
+
+function closeEdit() {
+  editingId = null;
+  $("editModal").classList.remove("open");
+}
+
+async function saveEdit() {
+  const t = T[lang];
+  const id = editingId;
+  const r = roomsData.find((x) => x.id === id);
+  if (!id || !r) { closeEdit(); return; }
+  const title = $("edTitle").value.trim();
+  const area = $("edArea").value.trim();
+  const city = $("edCity").value.trim().slice(0, 60);
+  const loc = $("edLoc").value;
+  const type = $("edType").value;
+  const price = Number($("edPrice").value);
+  const depRaw = $("edDeposit").value.trim();
+  const deposit = depRaw === "" ? 0 : Number(depRaw);
+  const extras = $("edExtras").value;
+  const ownerType = $("edOwnerType").value;
+  const desc = $("edDesc").value.trim().slice(0, 500);
+
+  if (!title || !area || !city || !$("edPrice").value.trim() || !extras || !ownerType) { alert(t.fillAll); return; }
+  if (!(price > 0)) { alert(t.badPrice); return; }
+  if (!(deposit >= 0)) { alert(t.badDeposit); return; }
+
+  const upd = {
+    title: title, area: area, city: city, loc: loc, type: type, price: price, deposit: deposit,
+    extras: extras, ownerType: ownerType, description: desc, updatedAt: serverTimestamp()
+  };
+  /* Rooms approved by phone verification stay approved. All other rooms go back to Pending,
+     so an admin checks the new details. */
+  let resubmit = false;
+  const ap = apOf(r);
+  if (ap !== "none" && !(ap === "approved" && r.approvalBy === "auto")) {
+    upd.approval = "pending";
+    upd.approvalBy = "system";
+    resubmit = true;
+  }
+
+  $("edSave").disabled = true;
+  try {
+    await updateDoc(doc(db, "rooms", id), upd);
+    alert(resubmit ? t.editSavedPending : t.editSaved);
+    closeEdit();
+  } catch (e) {
+    alert(t.errGeneric + " (" + (e.code || e.message) + ")");
+  }
+  $("edSave").disabled = false;
+}
+
 /* ---------- MY PROFILE (private page) ---------- */
 function updatePhoneUI() {
   const t = T[lang];
@@ -1590,7 +1744,7 @@ function renderOwner(uid) {
   let h = "";
   rooms.forEach((r) => {
     h += '<div class="card" style="margin:12px 0">' + cardTop(r, t) +
-      (uid === myUid ? '<span class="tag">' + esc(t.yours) + '</span>' : contactBtns(r, t)) + '</div>';
+      (uid === myUid ? '<span class="tag">' + esc(t.yours) + '</span>' + shareBtn(r, t) : contactBtns(r, t)) + '</div>';
   });
   $("ovRooms").innerHTML = h || '<div class="empty">' + esc(t.ovNone) + '</div>';
 }
@@ -1658,6 +1812,9 @@ function listClick(e) {
   else if (g("data-fav")) toggleFav(g("data-fav"));
   else if (g("data-owner")) openOwner(g("data-owner"));
   else if (g("data-big")) openBig(g("data-big"));
+  else if (g("data-share")) shareRoom(g("data-share"));
+  else if (g("data-edit")) openEdit(g("data-edit"));
+  else if (g("data-more")) { listLimit += PAGE; render(); }
 }
 
 /* ---------- EVENTS ---------- */
@@ -1667,6 +1824,7 @@ $("aBack").addEventListener("click", () => show("welcomeScreen"));
 $("tabLogin").addEventListener("click", () => setTab("login"));
 $("tabSignup").addEventListener("click", () => setTab("signup"));
 $("aBtn").addEventListener("click", doAuth);
+$("aForgot").addEventListener("click", doForgot);
 $("gBtn").addEventListener("click", doGoogle);
 
 $("vCheck").addEventListener("click", checkVerified);
@@ -1739,6 +1897,8 @@ $("countryFilter").addEventListener("change", () => {
 });
 
 $("addBtn").addEventListener("click", addRoom);
+$("edSave").addEventListener("click", saveEdit);
+$("edCancel").addEventListener("click", closeEdit);
 $("reportSendBtn").addEventListener("click", sendReport);
 $("reportCancel").addEventListener("click", closeReport);
 $("ssSave").addEventListener("click", saveSearch);
