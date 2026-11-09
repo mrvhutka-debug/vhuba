@@ -20,9 +20,17 @@ const AP_L = { pending: "Pending", approved: "Approved", needs_review: "Needs re
 const AP_C = { pending: "", approved: "ok", needs_review: "new", rejected: "bad", none: "" };
 const NOTICE_KIND = { approve: "approved", review: "needs_review", reject: "rejected", hide: "hidden", restore: "restored", remove: "removed" };
 const ACT_L = { approve: "Approve", review: "Needs review", reject: "Reject", hide: "Hide", restore: "Restore", remove: "Remove" };
+const LOG_L = {
+  room_approve: "Room approved", room_review: "Room marked needs review", room_reject: "Room rejected",
+  room_hide: "Room hidden", room_restore: "Room restored", room_remove: "Room removed",
+  verify_owner: "Owner verified", unverify_owner: "Owner verification removed",
+  fix_old_rooms: "Old rooms fixed", report_reviewed: "Report marked reviewed",
+  report_resolved: "Report marked resolved", report_rejected: "Report rejected"
+};
 const TAB_IDS = ["overview", "reports", "rooms", "users", "approval", "security", "profile", "activity"];
 const PHOTO_OK = /^data:image\/jpeg;base64,[A-Za-z0-9+\/=]+$/;
 const LINE = "border-top:1px solid var(--border);margin-top:8px;padding-top:8px";
+const SHOW_MAX = 40;
 
 export function initAdmin(c) {
   const $ = c.$;
@@ -35,6 +43,7 @@ export function initAdmin(c) {
   let rQuery = "";
   let uQuery = "";
   let usersAll = [];
+  let rmToken = 0;
   try { current = localStorage.getItem("vhubaAdminTab") || "overview"; } catch (e) {}
   if (TAB_IDS.indexOf(current) === -1) current = "overview";
 
@@ -181,13 +190,23 @@ export function initAdmin(c) {
     await batch.commit();
     return true;
   }
-
   async function verifyUser(uid, on) {
     const batch = writeBatch(db);
     if (on) batch.set(doc(db, "verified", uid), { ok: true });
     else batch.delete(doc(db, "verified", uid));
     batch.set(doc(collection(db, "adminLogs")), logDoc({
       action: on ? "verify_owner" : "unverify_owner", targetType: "user", targetId: uid, reason: ""
+    }));
+    await batch.commit();
+  }
+
+  async function setReportStatus(id, st) {
+    const batch = writeBatch(db);
+    batch.update(doc(db, "reports", id), {
+      status: st, lastAction: "status_" + st, reviewedBy: c.getUid(), reviewedAt: serverTimestamp()
+    });
+    batch.set(doc(collection(db, "adminLogs")), logDoc({
+      action: "report_" + st, targetType: "report", targetId: id, reason: ""
     }));
     await batch.commit();
   }
@@ -400,3 +419,306 @@ export function initAdmin(c) {
       box.innerHTML = '<div class="empty">Could not load. Check rules and admin setup.</div>';
     }
   }
+
+  /* ---------- ROOM MANAGEMENT ---------- */
+  function roomMatchesFilter(r, f) {
+    if (f === "all") return true;
+    if (f === "hidden") return r.hidden === true;
+    if (f === "reported") return Number(r.reportCount || 0) >= 1;
+    return apOf(r) === f;
+  }
+
+  async function roomsTab() {
+    body().innerHTML = '<select id="rmFilter">' +
+      '<option value="pending">Pending</option><option value="needs_review">Needs review</option>' +
+      '<option value="approved">Approved</option><option value="rejected">Rejected</option>' +
+      '<option value="hidden">Hidden by admin</option><option value="reported">Reported (1+)</option>' +
+      '<option value="none">Old rooms (no status)</option><option value="all">All rooms</option></select>' +
+      '<input id="rmSearch" placeholder="Search title, area, owner name, email or ID">' +
+      '<p id="rmSummary" class="mini"></p><div id="rmList"></div>';
+    $("rmFilter").value = rFilter;
+    $("rmSearch").value = rQuery;
+    $("rmFilter").addEventListener("change", () => { rFilter = $("rmFilter").value; renderRooms(); });
+    $("rmSearch").addEventListener("input", () => { rQuery = $("rmSearch").value.trim().toLowerCase(); renderRooms(); });
+    await renderRooms();
+  }
+
+  async function renderRooms() {
+    const box = $("rmList");
+    if (!box) return;
+    const token = ++rmToken;
+    const all = c.getRooms();
+    const sorted = all.slice().sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
+    let list = sorted.filter((r) => roomMatchesFilter(r, rFilter));
+    if (rQuery) {
+      await Promise.all(list.map((r) => getUser(r.uid)));
+      if (token !== rmToken) return;
+      list = list.filter((r) => {
+        const o = uc[r.uid];
+        const text = [r.title, r.area, r.id, r.uid, o && o.name, o && o.email].join(" ").toLowerCase();
+        return text.indexOf(rQuery) !== -1;
+      });
+    }
+    const shown = list.slice(0, SHOW_MAX);
+    await Promise.all(shown.map((r) => getUser(r.uid)));
+    if (token !== rmToken || !$("rmList")) return;
+    const sm = $("rmSummary");
+    if (sm) sm.textContent = list.length + " rooms found" + (list.length > SHOW_MAX ? " (showing first " + SHOW_MAX + ")" : "") + " · " + all.length + " total loaded";
+    let html = "";
+    shown.forEach((r) => { html += roomCard(r, uc[r.uid]); });
+    $("rmList").innerHTML = html || '<div class="empty">No rooms here.</div>';
+  }
+
+  /* ---------- USER MANAGEMENT ---------- */
+  async function usersTab() {
+    body().innerHTML = '<input id="usSearch" placeholder="Search name, email, phone or ID">' +
+      '<p id="usSummary" class="mini"></p><div id="usList"><div class="empty">Loading...</div></div>';
+    $("usSearch").value = uQuery;
+    $("usSearch").addEventListener("input", () => { uQuery = $("usSearch").value.trim().toLowerCase(); renderUsers(); });
+    try {
+      const snap = await getDocs(query(collection(db, "users"), limit(500)));
+      usersAll = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      usersAll.sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
+      renderUsers();
+    } catch (e) {
+      if ($("usList")) $("usList").innerHTML = '<div class="empty">Could not load users. Check rules and admin setup.</div>';
+    }
+  }
+
+  function renderUsers() {
+    const box = $("usList");
+    if (!box) return;
+    const ver = c.getVerified();
+    const rooms = c.getRooms();
+    let list = usersAll;
+    if (uQuery) {
+      list = usersAll.filter((u) => [u.name, u.email, u.phone, u.id].join(" ").toLowerCase().indexOf(uQuery) !== -1);
+    }
+    $("usSummary").textContent = list.length + " users found" + (list.length > SHOW_MAX ? " (showing first " + SHOW_MAX + ")" : "") + " · " + usersAll.length + " loaded";
+    let html = "";
+    list.slice(0, SHOW_MAX).forEach((u) => {
+      const isV = ver.has(u.id);
+      const rc2 = rooms.filter((r) => r.uid === u.id).length;
+      html += '<div class="card" style="margin:12px 0"><h3 style="padding-right:0">' + esc(u.name || "-") + '</h3>' +
+        (isV ? tag("✔ Verified owner", "ok") : "") +
+        (u.emailVerified === true ? tag("Email verified", "ok") : tag("Email not verified", "bad")) +
+        (u.phoneVerified === true ? tag("Phone verified", "ok") : tag("Phone not verified")) +
+        '<p class="mini">Email: ' + esc(u.email || "-") + '</p>' +
+        '<p class="mini">Phone: ' + esc(u.phone ? ("+" + (u.phoneCc || "") + " " + u.phone) : "-") + (u.hidePhone ? " (hidden on rooms)" : "") + '</p>' +
+        '<p class="mini">Rooms: ' + rc2 + ' · Favourites: ' + ((u.favs || []).length) + '</p>' +
+        '<p class="mini">Joined: ' + esc(fts(u.createdAt) || "-") + '</p>' +
+        '<p class="mini">Last active: ' + esc(fts(u.lastActive) || "-") + '</p>' +
+        '<p class="mini">User ID: ' + esc(u.id) + '</p>' +
+        '<div style="' + LINE + '">' +
+        (isV
+          ? '<button class="act gray" data-a="uunver" data-uid="' + esc(u.id) + '">Remove verified mark</button>'
+          : '<button class="act" data-a="uver" data-uid="' + esc(u.id) + '">Verify this owner</button>') +
+        '</div></div>';
+    });
+    box.innerHTML = html || '<div class="empty">No users found.</div>';
+  }
+
+  /* ---------- ROOM APPROVAL SETTINGS ---------- */
+  function approvalTab() {
+    const rooms = c.getRooms();
+    const n = { pending: 0, approved: 0, needs_review: 0, rejected: 0, none: 0 };
+    rooms.forEach((r) => { const a = apOf(r); if (a in n) n[a]++; });
+    body().innerHTML =
+      '<h3 class="title">Room approval</h3>' +
+      grid([
+        stat("Pending", n.pending),
+        stat("Needs review", n.needs_review),
+        stat("Approved", n.approved),
+        stat("Rejected", n.rejected),
+        stat("Old rooms (no status)", n.none)
+      ]) +
+      '<div class="card" style="margin:12px 0"><b>How rooms get approved</b>' +
+      '<p class="mini">Every new room starts as Pending.</p>' +
+      '<p class="mini">A room is approved automatically only when: the owner verified a phone number by SMS code, that number is the one on the room (or the owner hides the number), the room has at least one photo, and the owner has a name.</p>' +
+      '<p class="mini">All other rooms wait here for an admin. Open Room Management and choose Pending.</p>' +
+      '<p class="mini">A room with 3 or more reports hides itself automatically.</p></div>' +
+      '<div class="card" style="margin:12px 0"><b>Fix old rooms</b>' +
+      '<p class="mini">Rooms added before the approval system have no status and stay hidden from searches. This approves all of them in one step.</p>' +
+      (n.none > 0
+        ? '<button class="act" data-a="fixold">Fix old rooms (' + n.none + ')</button>'
+        : '<p class="mini">✔ No old rooms need fixing.</p>') +
+      '</div>' +
+      '<div><button class="act gray" data-a="goto" data-tab="rooms" data-filter="pending">Open pending rooms</button></div>';
+  }
+
+  async function fixOldRooms() {
+    const old = c.getRooms().filter((r) => apOf(r) === "none");
+    if (!old.length) { alert("No old rooms need fixing."); return; }
+    if (!confirm("Approve " + old.length + " old rooms? They will become visible to everyone.")) return;
+    for (let i = 0; i < old.length; i += 200) {
+      const part = old.slice(i, i + 200);
+      const b = writeBatch(db);
+      part.forEach((r) => {
+        b.update(doc(db, "rooms", r.id), {
+          approval: "approved", approvalBy: "legacy", approvalAt: serverTimestamp(),
+          approvalReason: "Old room approved by admin"
+        });
+      });
+      b.set(doc(collection(db, "adminLogs")), logDoc({
+        action: "fix_old_rooms", targetType: "rooms", targetId: "", reason: part.length + " old rooms approved"
+      }));
+      await b.commit();
+    }
+    alert(old.length + " old rooms approved.");
+  }
+
+  /* ---------- SECURITY SETTINGS ---------- */
+  async function securityTab() {
+    body().innerHTML = '<div class="empty">Loading...</div>';
+    const ver = Array.from(c.getVerified());
+    await Promise.all(ver.map((id) => getUser(id)));
+    let vh = "";
+    ver.forEach((id) => {
+      const u = uc[id];
+      vh += '<div class="card" style="margin:8px 0"><b>' + esc(u ? (u.name || "-") : "(profile not found)") + '</b>' +
+        '<p class="mini">' + esc(u && u.email ? u.email : "") + '</p>' +
+        '<p class="mini">ID: ' + esc(id) + '</p>' +
+        '<button class="act gray" data-a="uunver" data-uid="' + esc(id) + '">Remove verified mark</button></div>';
+    });
+    if (current !== "security") return;
+    body().innerHTML =
+      '<h3 class="title">Verified owners</h3>' +
+      '<p class="mini">A verified mark means you checked this person yourself. The owner gives you their ID from Settings.</p>' +
+      '<input id="vidInput" placeholder="Paste the owner ID here">' +
+      '<button class="act" data-a="vadd">Verify this owner ID</button>' +
+      '<div style="margin-top:10px">' + (vh || '<p class="mini">No verified owners yet.</p>') + '</div>' +
+      '<h3 class="title" style="margin-top:16px">Security notes</h3>' +
+      '<div class="card" style="margin:8px 0">' +
+      '<p class="mini">Admin access is decided by the Firebase rules: the logged-in email must be verified and must match the admin email written in the rules. Nothing in this page can change that.</p>' +
+      '<p class="mini">Every admin action is saved in Admin Activity History and cannot be edited or deleted.</p>' +
+      '<p class="mini">Keep your admin email password strong and never share it.</p></div>';
+  }
+
+  /* ---------- ADMIN PROFILE ---------- */
+  function profileTab() {
+    const p = c.getProfile() || {};
+    const u = auth.currentUser;
+    body().innerHTML =
+      '<h3 class="title">Admin profile</h3>' +
+      '<div class="card" style="margin:8px 0">' +
+      '<p>Name: ' + esc(p.name || "-") + '</p>' +
+      '<p class="mini">Email: ' + esc((u && u.email) || "-") + '</p>' +
+      '<p class="mini">Email verified: ' + ((u && u.emailVerified) ? "Yes" : "No") + '</p>' +
+      '<p class="mini">Admin ID: ' + esc(c.getUid()) + '</p></div>' +
+      '<button class="act" data-a="resetpw">Send password reset email</button>' +
+      '<button class="del" data-a="logout">Logout</button>' +
+      '<p class="mini" style="margin-top:12px">Admin remembers the last tab you opened.</p>';
+  }
+
+  /* ---------- ADMIN ACTIVITY HISTORY ---------- */
+  async function activityTab() {
+    body().innerHTML = '<div class="empty">Loading...</div>';
+    try {
+      const snap = await getDocs(query(collection(db, "adminLogs"), orderBy("createdAt", "desc"), limit(100)));
+      let html = '<p class="mini">Latest 100 admin actions.</p>';
+      snap.docs.forEach((d) => {
+        const l = d.data();
+        const s = l.snapshot;
+        html += '<div class="card" style="margin:8px 0"><b>' + esc(LOG_L[l.action] || l.action || "") + '</b>' +
+          (s && s.title ? '<p>' + esc(s.title) + '</p>' : '') +
+          (l.reason ? '<p class="mini">Reason: ' + esc(l.reason) + '</p>' : '') +
+          '<p class="mini">By: ' + esc(l.adminEmail || l.adminId || "") + '</p>' +
+          (l.targetId ? '<p class="mini">Target ID: ' + esc(l.targetId) + '</p>' : '') +
+          '<p class="mini">' + esc(fts(l.createdAt)) + '</p></div>';
+      });
+      if (current !== "activity") return;
+      body().innerHTML = snap.empty ? '<div class="empty">No admin actions yet.</div>' : html;
+    } catch (e) {
+      body().innerHTML = '<div class="empty">Could not load. Check rules and admin setup.</div>';
+    }
+  }
+
+  /* ---------- TABS AND CLICKS ---------- */
+  async function load() {
+    if (!c.isAdmin()) return;
+    $("adminTab").value = current;
+    try {
+      if (current === "overview") { body().innerHTML = '<div class="empty">Loading...</div>'; await overview(); }
+      else if (current === "reports") await reportsTab();
+      else if (current === "rooms") await roomsTab();
+      else if (current === "users") await usersTab();
+      else if (current === "approval") approvalTab();
+      else if (current === "security") await securityTab();
+      else if (current === "profile") profileTab();
+      else if (current === "activity") await activityTab();
+    } catch (e) {
+      body().innerHTML = '<div class="empty">Could not load. Check rules and admin setup.</div>';
+    }
+  }
+
+  function setTab(t) {
+    if (TAB_IDS.indexOf(t) === -1) t = "overview";
+    current = t;
+    try { localStorage.setItem("vhubaAdminTab", t); } catch (e) {}
+    return load();
+  }
+
+  $("adminTab").addEventListener("change", () => { setTab($("adminTab").value); });
+
+  async function onClick(e) {
+    const el = e.target && e.target.closest ? e.target.closest("[data-a]") : null;
+    if (!el || !body().contains(el)) return;
+    const a = el.getAttribute("data-a");
+    const g = (n) => el.getAttribute(n) || "";
+    el.disabled = true;
+    try {
+      if (a === "goto") {
+        const t = g("data-tab");
+        if (t === "rooms") rFilter = g("data-filter") || "pending";
+        if (t === "reports") rpFilter = g("data-filter") || "new";
+        await setTab(t);
+      } else if (a === "raction") {
+        const ok = await roomAction(g("data-rid"), g("data-act"), g("data-id"));
+        if (ok) await load();
+      } else if (a === "rstatus") {
+        await setReportStatus(g("data-id"), g("data-s"));
+        await load();
+      } else if (a === "uver") {
+        await verifyUser(g("data-uid"), true);
+        alert("Owner verified.");
+        if (current === "reports") await load();
+        else if (current === "users") renderUsers();
+      } else if (a === "uunver") {
+        if (confirm("Remove the verified mark from this owner?")) {
+          await verifyUser(g("data-uid"), false);
+          if (current === "security") await securityTab();
+          else if (current === "users") renderUsers();
+        }
+      } else if (a === "vadd") {
+        const id = ($("vidInput").value || "").trim();
+        if (!id) { alert("Paste the owner ID first."); }
+        else {
+          const u = await getUser(id);
+          if (!u) { alert("No user found with this ID."); }
+          else { await verifyUser(id, true); alert("Verified: " + (u.name || id)); await securityTab(); }
+        }
+      } else if (a === "fixold") {
+        await fixOldRooms();
+        await load();
+      } else if (a === "resetpw") {
+        const em = auth.currentUser && auth.currentUser.email;
+        if (em) { await sendPasswordResetEmail(auth, em); alert("Password reset email sent to " + em); }
+      } else if (a === "logout") {
+        await c.logout();
+      }
+    } catch (err) {
+      alert("Failed: " + (err.code || err.message));
+    }
+    el.disabled = false;
+  }
+
+  body().addEventListener("click", onClick);
+
+  return {
+    load,
+    onRooms() {
+      if (current === "rooms" && $("rmList")) renderRooms();
+      else if (current === "approval" && $("adminBody")) approvalTab();
+    }
+  };
+}
