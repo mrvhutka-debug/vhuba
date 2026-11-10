@@ -1,5 +1,9 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
+  initializeAppCheck,
+  ReCaptchaEnterpriseProvider
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app-check.js";
+import {
   getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged,
   sendEmailVerification, sendPasswordResetEmail, EmailAuthProvider, reauthenticateWithCredential,
   updatePassword, deleteUser, GoogleAuthProvider, signInWithPopup, reauthenticateWithPopup,
@@ -20,6 +24,10 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
+const appCheck = initializeAppCheck(app, {
+  provider: new ReCaptchaEnterpriseProvider("6LfzqBguAAAAAEtcSefF1Ltqglndc-LmoU68t5IA"),
+  isTokenAutoRefreshEnabled: true
+});
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 
