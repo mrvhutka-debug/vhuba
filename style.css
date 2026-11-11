@@ -20,20 +20,21 @@ button:disabled{background:#9ca3af}
 .msg{color:var(--bad);min-height:20px;margin-bottom:8px;font-size:14px}
 .policy{max-height:260px;overflow-y:auto;background:var(--soft);padding:10px;border-radius:8px;font-size:14px;line-height:1.5;margin-bottom:10px}
 .check{display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:15px}
-.check input{width:22px;height:22px;margin:0}
+.check input{width:22px;height:22px;margin:0;flex-shrink:0}
 .nav{background:var(--brand2);padding:6px 12px;display:flex;gap:8px;align-items:center}
 .navbtn{margin:0;background:transparent;color:#fff;padding:10px;border:none}
 .menuicon{width:auto;font-size:26px;padding:6px 12px;line-height:1}
 .pagetitle{color:#fff;font-weight:bold;font-size:18px}
 .overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:40}
 .overlay.open{display:block}
-.side{position:fixed;top:0;left:-280px;width:260px;height:100%;background:var(--card);z-index:50;transition:left .25s;padding-top:20px;box-shadow:2px 0 8px rgba(0,0,0,.3)}
+.side{position:fixed;top:0;left:-280px;width:260px;height:100%;background:var(--card);z-index:50;transition:left .25s;padding-top:20px;box-shadow:2px 0 8px rgba(0,0,0,.3);overflow-y:auto}
 .side.open{left:0}
 button.mrow{background:var(--card);color:var(--text);text-align:left;border:none;border-bottom:1px solid var(--border);border-radius:0;margin:0;padding:16px;font-weight:normal;font-size:17px}
 button.mrow.danger{color:var(--bad)}
 .backbtn{width:auto;padding:8px 16px;margin-bottom:8px}
 button.bigbtn{display:block;text-align:left;padding:22px 18px;margin-bottom:14px;border-radius:14px;font-size:20px;line-height:1.3}
 button.bigbtn.give{background:var(--ok)}
+button.bigbtn.third{background:#7c3aed}
 button.bigbtn small{display:block;font-size:14px;font-weight:normal;margin-top:6px;opacity:.9}
 .badge{display:inline-block;background:#fff;color:var(--brand2);border-radius:20px;padding:4px 12px;font-size:13px;font-weight:bold;margin-top:8px}
 .card{position:relative;background:var(--card);margin:12px;padding:14px;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.2)}
@@ -48,6 +49,7 @@ button.heart{position:absolute;top:6px;right:6px;width:auto;margin:0;padding:4px
 .call{display:block;text-align:center;background:var(--ok);color:#fff;padding:10px;border-radius:8px;text-decoration:none;margin-top:8px}
 .call.wa{background:#25d366}
 .call.map{background:var(--brand)}
+.call.visit{background:#7c3aed}
 .phoneoff{color:var(--muted);font-size:14px;margin-top:8px}
 button.del{background:var(--bad);margin:8px 0 0 0;padding:10px}
 button.act{margin:8px 0 0 0;padding:10px}
@@ -81,4 +83,34 @@ button.row.danger{color:var(--bad)}
 .rowline select{width:auto;margin:0}
 .rowline input[type=checkbox]{width:22px;height:22px;margin:0;flex-shrink:0}
 .hint{color:var(--muted);font-size:13px;padding:0 12px 12px;margin:0}
-.mini{font-size:13px;color:var(--muted);word-break:break-all}
+.mini{font-size:13px;color:var(--muted);overflow-wrap:anywhere;word-break:normal}
+
+/* ---------- NEW: filters box ---------- */
+.fbox{display:none}
+.fbox.open{display:block}
+.hide{display:none!important}
+
+/* ---------- NEW: tick-box groups (facilities, house rules) ---------- */
+.chkgrp{background:var(--soft);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px}
+.chkgrp .lbl{margin-top:0}
+.chkgrp .check{margin-bottom:8px;font-size:15px}
+.chkgrp .check:last-child{margin-bottom:0}
+
+/* ---------- NEW: safety checklist ---------- */
+.safe{background:var(--card);border-radius:10px;padding:10px 12px;margin-bottom:10px;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+.safe summary{font-weight:bold;cursor:pointer}
+.safe ul{margin:8px 0 0 18px;padding:0;font-size:14px;line-height:1.6}
+
+/* ---------- NEW: map ---------- */
+#mapBox{height:70vh;min-height:320px;border-radius:10px;overflow:hidden;border:1px solid var(--border);margin-bottom:8px;position:relative;z-index:0}
+.mapbtn{display:inline-block;background:var(--brand);color:#fff;border-radius:6px;padding:6px 10px;text-decoration:none;font-size:13px;margin-top:4px}
+
+/* ---------- NEW: reviews and stars ---------- */
+.stars{color:#f59e0b;font-size:18px;letter-spacing:2px}
+.rvitem{border-top:1px solid var(--border);padding:10px 0}
+.rvitem:first-child{border-top:none}
+.rvitem p{margin:4px 0}
+
+/* ---------- NEW: calculator result ---------- */
+.result{background:var(--tagbg);color:var(--tagtext);padding:12px;border-radius:10px;font-size:18px;font-weight:bold;margin:8px 0}
+.result small{display:block;font-weight:normal;font-size:14px;margin-top:4px}

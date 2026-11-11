@@ -10,6 +10,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <link rel="preload" as="image" href="splash.jpg">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <link rel="stylesheet" href="style.css">
 <style>
 #splash{position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;background-color:#0044fb;background-image:url(splash.jpg),linear-gradient(#1784fe,#0044fb 50%,#0026d1);background-size:cover,100% 100%;background-position:center,center;background-repeat:no-repeat,no-repeat;transition:opacity .5s ease}
@@ -117,6 +118,9 @@
     <button class="mrow" id="mProfile" data-i18n="navProfile"></button>
     <button class="mrow" id="mFavs" data-i18n="navFavs"></button>
     <button class="mrow" id="mNotices"></button>
+    <button class="mrow" id="mRoommates" data-i18n="navRoommates"></button>
+    <button class="mrow" id="mMap" data-i18n="navMap"></button>
+    <button class="mrow" id="mTools" data-i18n="navTools"></button>
     <button class="mrow" id="mSettings" data-i18n="navSettings"></button>
     <button class="mrow" id="mAdmin" style="display:none" data-i18n="navAdmin"></button>
     <button class="mrow danger" id="mLogout" data-i18n="logout"></button>
@@ -132,6 +136,8 @@
         <option value="fake_photos" data-i18n="rFakePhotos"></option>
         <option value="wrong_contact" data-i18n="rWrongContact"></option>
         <option value="suspicious" data-i18n="rSuspicious"></option>
+        <option value="already_rented" data-i18n="rAlreadyRented"></option>
+        <option value="broker_money" data-i18n="rBrokerMoney"></option>
         <option value="other" data-i18n="rOther"></option>
       </select>
       <textarea id="reportDetails" maxlength="1000" data-ph="reportDetailsPh"></textarea>
@@ -169,6 +175,33 @@
         <option value="owner" data-i18n="oOwner"></option>
         <option value="broker" data-i18n="oBroker"></option>
       </select>
+      <label class="lbl" data-i18n="fwLabel"></label>
+      <select id="edForWho">
+        <option value="any" data-i18n="fwAny"></option>
+        <option value="boys" data-i18n="fwBoys"></option>
+        <option value="girls" data-i18n="fwGirls"></option>
+        <option value="family" data-i18n="fwFamily"></option>
+      </select>
+      <label class="lbl" data-i18n="availLabel"></label>
+      <input id="edAvail" type="date">
+      <div class="chkgrp" id="edAmGroup">
+        <label class="lbl" data-i18n="amTitle"></label>
+        <label class="check"><input type="checkbox" class="edam" value="wifi"><span data-i18n="amWifi"></span></label>
+        <label class="check"><input type="checkbox" class="edam" value="ac"><span data-i18n="amAc"></span></label>
+        <label class="check"><input type="checkbox" class="edam" value="geyser"><span data-i18n="amGeyser"></span></label>
+        <label class="check"><input type="checkbox" class="edam" value="bath"><span data-i18n="amBath"></span></label>
+        <label class="check"><input type="checkbox" class="edam" value="parking"><span data-i18n="amParking"></span></label>
+        <label class="check"><input type="checkbox" class="edam" value="furnished"><span data-i18n="amFurnished"></span></label>
+        <label class="check"><input type="checkbox" class="edam" value="water"><span data-i18n="amWater"></span></label>
+        <label class="check"><input type="checkbox" class="edam" value="backup"><span data-i18n="amBackup"></span></label>
+        <label class="check"><input type="checkbox" class="edam" value="kitchen"><span data-i18n="amKitchen"></span></label>
+      </div>
+      <div class="chkgrp" id="edRuGroup">
+        <label class="lbl" data-i18n="ruTitle"></label>
+        <label class="check"><input type="checkbox" class="edru" value="vegOnly"><span data-i18n="ruVeg"></span></label>
+        <label class="check"><input type="checkbox" class="edru" value="noSmoking"><span data-i18n="ruNoSmoke"></span></label>
+        <label class="check"><input type="checkbox" class="edru" value="petsOk"><span data-i18n="ruPets"></span></label>
+      </div>
       <textarea id="edDesc" maxlength="500" data-ph="descPh"></textarea>
       <p class="hint" style="padding:0 0 10px 0" data-i18n="editNote"></p>
       <button id="edSave" data-i18n="editSave"></button>
@@ -193,61 +226,201 @@
       <span data-i18n="btnGive"></span>
       <small data-i18n="btnGiveSub"></small>
     </button>
+    <button id="goRoommates" class="bigbtn third" type="button">
+      <span data-i18n="rmTitle"></span>
+    </button>
+    <button id="inviteBtn" class="gray" type="button" data-i18n="inviteBtn"></button>
   </div>
 
   <div id="findView" style="display:none">
     <div class="box">
       <button id="backFind" class="gray backbtn" type="button">←</button>
       <div class="tip" data-i18n="tipSafety"></div>
-
-      <div class="ssbox">
-        <div class="sshead" data-i18n="ssTitle"></div>
-        <div id="ssText" class="sstext"></div>
-        <button id="ssSave" class="act" type="button" data-i18n="ssSave"></button>
-        <button id="ssApply" class="act gray" type="button" data-i18n="ssApply"></button>
-        <button id="ssClear" class="act red" type="button" data-i18n="ssClear"></button>
-      </div>
+      <details class="safe">
+        <summary data-i18n="safeTitle"></summary>
+        <div id="safeBody"></div>
+      </details>
 
       <input id="search" data-ph="searchPh">
-      <select id="typeFilter">
-        <option value="" data-i18n="allTypes"></option>
-        <option value="single" data-i18n="single"></option>
-        <option value="shared" data-i18n="shared"></option>
-        <option value="bhk" data-i18n="bhk"></option>
+      <button id="fToggle" class="gray" type="button"></button>
+
+      <div id="fBox" class="fbox">
+        <div class="ssbox">
+          <div class="sshead" data-i18n="ssTitle"></div>
+          <div id="ssText" class="sstext"></div>
+          <button id="ssSave" class="act" type="button" data-i18n="ssSave"></button>
+          <button id="ssApply" class="act gray" type="button" data-i18n="ssApply"></button>
+          <button id="ssClear" class="act red" type="button" data-i18n="ssClear"></button>
+        </div>
+
+        <select id="typeFilter">
+          <option value="" data-i18n="allTypes"></option>
+          <option value="single" data-i18n="single"></option>
+          <option value="shared" data-i18n="shared"></option>
+          <option value="bhk" data-i18n="bhk"></option>
+        </select>
+        <select id="locFilter">
+          <option value="" data-i18n="anyLoc"></option>
+          <option value="highway" data-i18n="highway"></option>
+          <option value="gali" data-i18n="gali"></option>
+        </select>
+        <select id="countryFilter">
+          <option value="" data-i18n="cAny"></option>
+          <option value="IN" data-i18n="ctIN"></option>
+          <option value="NP" data-i18n="ctNP"></option>
+        </select>
+        <p id="priceHint" style="color:var(--muted);font-size:13px;margin:0 0 10px 0"></p>
+        <select id="budgetFilter">
+          <option value="" data-i18n="anyBudget"></option>
+        </select>
+        <select id="depFilter">
+          <option value="" data-i18n="depAny"></option>
+        </select>
+        <select id="exFilter">
+          <option value="" data-i18n="exAny"></option>
+          <option value="incl" data-i18n="exInclOnly"></option>
+        </select>
+        <select id="ownFilter">
+          <option value="" data-i18n="ownAny"></option>
+          <option value="owner" data-i18n="ownOnly"></option>
+        </select>
+        <select id="fwFilter">
+          <option value="" data-i18n="fwfAny"></option>
+          <option value="boys" data-i18n="fwfBoys"></option>
+          <option value="girls" data-i18n="fwfGirls"></option>
+          <option value="family" data-i18n="fwfFamily"></option>
+        </select>
+        <select id="amFilter">
+          <option value="" data-i18n="amfAny"></option>
+          <option value="wifi" data-i18n="amWifi"></option>
+          <option value="ac" data-i18n="amAc"></option>
+          <option value="geyser" data-i18n="amGeyser"></option>
+          <option value="bath" data-i18n="amBath"></option>
+          <option value="parking" data-i18n="amParking"></option>
+          <option value="furnished" data-i18n="amFurnished"></option>
+          <option value="water" data-i18n="amWater"></option>
+          <option value="backup" data-i18n="amBackup"></option>
+          <option value="kitchen" data-i18n="amKitchen"></option>
+        </select>
+        <select id="sortBy">
+          <option value="new" data-i18n="sNew"></option>
+          <option value="near" data-i18n="sNear"></option>
+          <option value="low" data-i18n="sLow"></option>
+          <option value="high" data-i18n="sHigh"></option>
+        </select>
+      </div>
+    </div>
+    <div id="list"></div>
+  </div>
+
+  <div id="roomView" class="box" style="display:none">
+    <button id="backRoom" class="gray backbtn" type="button">←</button>
+    <div id="roomBody"></div>
+  </div>
+
+  <div id="mapView" class="box" style="display:none">
+    <button id="backMap" class="gray backbtn" type="button">←</button>
+    <p class="hint" style="padding:0 0 8px 0" data-i18n="mapNote"></p>
+    <div id="mapBox"></div>
+    <p id="mapMsg" class="hint" style="padding:0"></p>
+  </div>
+
+  <div id="roommatesView" class="box" style="display:none">
+    <button id="backRoommates" class="gray backbtn" type="button">←</button>
+    <h3 class="title" data-i18n="rmTitle"></h3>
+    <div class="tip" data-i18n="rmInfo"></div>
+    <div id="rmMine"></div>
+
+    <div id="rmFormBox" style="display:none">
+      <h3 class="title" data-i18n="rmFormTitle"></h3>
+      <select id="rmKind">
+        <option value="haveRoom" data-i18n="rmKindHave"></option>
+        <option value="needRoom" data-i18n="rmKindNeed"></option>
       </select>
-      <select id="locFilter">
-        <option value="" data-i18n="anyLoc"></option>
-        <option value="highway" data-i18n="highway"></option>
-        <option value="gali" data-i18n="gali"></option>
+      <label class="lbl" data-i18n="rmGenderLbl"></label>
+      <select id="rmGender">
+        <option value="male" data-i18n="gnMale"></option>
+        <option value="female" data-i18n="gnFemale"></option>
+        <option value="other" data-i18n="gnOther"></option>
       </select>
-      <select id="countryFilter">
-        <option value="" data-i18n="cAny"></option>
+      <label class="lbl" data-i18n="rmWantLbl"></label>
+      <select id="rmWant">
+        <option value="any" data-i18n="wnAny"></option>
+        <option value="male" data-i18n="wnMale"></option>
+        <option value="female" data-i18n="wnFemale"></option>
+      </select>
+      <select id="rmCountry">
+        <option value="" data-i18n="rmCountryPick"></option>
         <option value="IN" data-i18n="ctIN"></option>
         <option value="NP" data-i18n="ctNP"></option>
       </select>
-      <p id="priceHint" style="color:var(--muted);font-size:13px;margin:0 0 10px 0"></p>
-      <select id="budgetFilter">
-        <option value="" data-i18n="anyBudget"></option>
+      <input id="rmBudget" type="number">
+      <input id="rmCity" data-ph="cityPh" maxlength="60">
+      <input id="rmArea" data-ph="rmAreaPh" maxlength="120">
+      <label class="lbl" data-i18n="rmDietLbl"></label>
+      <select id="rmDiet">
+        <option value="any" data-i18n="dtAny"></option>
+        <option value="veg" data-i18n="dtVeg"></option>
+        <option value="nonveg" data-i18n="dtNonveg"></option>
       </select>
-      <select id="depFilter">
-        <option value="" data-i18n="depAny"></option>
+      <label class="lbl" data-i18n="rmSmokeLbl"></label>
+      <select id="rmSmoke">
+        <option value="no" data-i18n="smNo"></option>
+        <option value="yes" data-i18n="smYes"></option>
       </select>
-      <select id="exFilter">
-        <option value="" data-i18n="exAny"></option>
-        <option value="incl" data-i18n="exInclOnly"></option>
+      <label class="lbl" data-i18n="rmWorkLbl"></label>
+      <select id="rmWork">
+        <option value="student" data-i18n="wkStudent"></option>
+        <option value="working" data-i18n="wkWorking"></option>
+        <option value="other" data-i18n="wkOther"></option>
       </select>
-      <select id="ownFilter">
-        <option value="" data-i18n="ownAny"></option>
-        <option value="owner" data-i18n="ownOnly"></option>
-      </select>
-      <select id="sortBy">
-        <option value="new" data-i18n="sNew"></option>
-        <option value="near" data-i18n="sNear"></option>
-        <option value="low" data-i18n="sLow"></option>
-        <option value="high" data-i18n="sHigh"></option>
-      </select>
+      <label class="lbl" data-i18n="rmMoveLbl"></label>
+      <input id="rmMove" type="date">
+      <textarea id="rmAbout" maxlength="300" data-ph="rmAboutPh"></textarea>
+      <div class="row2">
+        <select id="rmCc">
+          <option value="91">India +91</option>
+          <option value="977">Nepal +977</option>
+        </select>
+        <input id="rmPhone" type="tel" maxlength="10" data-ph="rmPhonePh">
+      </div>
+      <label class="check">
+        <input type="checkbox" id="rmAgree">
+        <span data-i18n="rmAgree"></span>
+      </label>
+      <button id="rmSave" type="button" data-i18n="rmSave"></button>
+      <button id="rmCancel" class="gray" type="button" data-i18n="cancel"></button>
     </div>
-    <div id="list"></div>
+
+    <div id="rmBrowse">
+      <input id="rmSearch" data-ph="rmSearchPh">
+      <select id="rmKindFilter">
+        <option value="" data-i18n="rmFilterAll"></option>
+        <option value="haveRoom" data-i18n="rmTagHave"></option>
+        <option value="needRoom" data-i18n="rmTagNeed"></option>
+      </select>
+      <div id="rmList"></div>
+    </div>
+  </div>
+
+  <div id="toolsView" class="box" style="display:none">
+    <button id="backTools" class="gray backbtn" type="button">←</button>
+    <h3 class="title" data-i18n="tlTitle"></h3>
+    <p class="hint" style="padding:0 0 10px 0" data-i18n="tlInfo"></p>
+      <label class="lbl" data-i18n="tlRent"></label>
+    <input id="tcRent" type="number" inputmode="decimal" min="0">
+    <label class="lbl" data-i18n="tlElec"></label>
+    <input id="tcElec" type="number" inputmode="decimal" min="0">
+    <label class="lbl" data-i18n="tlWater"></label>
+    <input id="tcWater" type="number" inputmode="decimal" min="0">
+    <label class="lbl" data-i18n="tlNet"></label>
+    <input id="tcNet" type="number" inputmode="decimal" min="0">
+    <label class="lbl" data-i18n="tlOther"></label>
+    <input id="tcOther" type="number" inputmode="decimal" min="0">
+    <label class="lbl" data-i18n="tlPeople"></label>
+    <input id="tcPeople" type="number" inputmode="numeric" min="1" value="2">
+    <button id="tcCalc" type="button" data-i18n="tlCalc"></button>
+    <div id="tcResult"></div>
   </div>
 
   <div id="favsView" style="display:none">
@@ -282,6 +455,7 @@
       <option value="" data-i18n="pfNotSet"></option>
       <option value="IN" data-i18n="pfIN"></option>
       <option value="NP" data-i18n="pfNP"></option>
+    </select>
     <label class="check">
       <input type="checkbox" id="pfShowCountry">
       <span data-i18n="pfShowCountry"></span>
@@ -330,9 +504,25 @@
     <div id="ovBody"></div>
     <h3 class="title" style="margin-top:16px" data-i18n="ovRooms"></h3>
     <div id="ovRooms"></div>
-  </div>
 
-  <div id="mineView" class="box" style="display:none">
+    <h3 class="title" style="margin-top:16px" data-i18n="rvTitle"></h3>
+    <div id="ovRating"></div>
+    <div id="rvBox" style="display:none">
+      <label class="lbl" data-i18n="rvRating"></label>
+      <select id="rvStars">
+        <option value="5">★★★★★ (5)</option>
+        <option value="4">★★★★ (4)</option>
+        <option value="3">★★★ (3)</option>
+        <option value="2">★★ (2)</option>
+        <option value="1">★ (1)</option>
+      </select>
+      <textarea id="rvComment" maxlength="300" data-ph="rvCommentPh"></textarea>
+      <button id="rvSave" type="button" data-i18n="rvSave"></button>
+      <button id="rvDel" class="gray" type="button" style="display:none" data-i18n="rvDel"></button>
+    </div>
+    <div id="ovReviews"></div>
+  </div>
+    <div id="mineView" class="box" style="display:none">
     <button id="backMine" class="gray backbtn" type="button">←</button>
     <div id="phoneNudge" class="tip" style="display:none">
       <span id="nudgeText"></span>
@@ -370,6 +560,33 @@
       <option value="owner" data-i18n="oOwner"></option>
       <option value="broker" data-i18n="oBroker"></option>
     </select>
+    <label class="lbl" data-i18n="fwLabel"></label>
+    <select id="forWho">
+      <option value="any" data-i18n="fwAny"></option>
+      <option value="boys" data-i18n="fwBoys"></option>
+      <option value="girls" data-i18n="fwGirls"></option>
+      <option value="family" data-i18n="fwFamily"></option>
+    </select>
+    <label class="lbl" data-i18n="availLabel"></label>
+    <input id="availFrom" type="date">
+    <div class="chkgrp" id="amGroup">
+      <label class="lbl" data-i18n="amTitle"></label>
+      <label class="check"><input type="checkbox" class="amc" value="wifi"><span data-i18n="amWifi"></span></label>
+      <label class="check"><input type="checkbox" class="amc" value="ac"><span data-i18n="amAc"></span></label>
+      <label class="check"><input type="checkbox" class="amc" value="geyser"><span data-i18n="amGeyser"></span></label>
+      <label class="check"><input type="checkbox" class="amc" value="bath"><span data-i18n="amBath"></span></label>
+      <label class="check"><input type="checkbox" class="amc" value="parking"><span data-i18n="amParking"></span></label>
+      <label class="check"><input type="checkbox" class="amc" value="furnished"><span data-i18n="amFurnished"></span></label>
+      <label class="check"><input type="checkbox" class="amc" value="water"><span data-i18n="amWater"></span></label>
+      <label class="check"><input type="checkbox" class="amc" value="backup"><span data-i18n="amBackup"></span></label>
+      <label class="check"><input type="checkbox" class="amc" value="kitchen"><span data-i18n="amKitchen"></span></label>
+    </div>
+    <div class="chkgrp" id="ruGroup">
+      <label class="lbl" data-i18n="ruTitle"></label>
+      <label class="check"><input type="checkbox" class="ruc" value="vegOnly"><span data-i18n="ruVeg"></span></label>
+      <label class="check"><input type="checkbox" class="ruc" value="noSmoking"><span data-i18n="ruNoSmoke"></span></label>
+      <label class="check"><input type="checkbox" class="ruc" value="petsOk"><span data-i18n="ruPets"></span></label>
+    </div>
     <textarea id="desc" maxlength="500" data-ph="descPh"></textarea>
     <select id="cc">
       <option value="91">India (+91)</option>
@@ -446,6 +663,20 @@
         <textarea id="reportText" data-ph="reportPh"></textarea>
         <button id="sendReport" data-i18n="reportBtn"></button>
       </div>
+      <button class="row" data-sub="subFb" data-i18n="fbRow"></button>
+      <div class="sub" id="subFb">
+        <label class="lbl" data-i18n="fbRateLbl"></label>
+        <select id="fbRate">
+          <option value="">-</option>
+          <option value="5">★★★★★ (5)</option>
+          <option value="4">★★★★ (4)</option>
+          <option value="3">★★★ (3)</option>
+          <option value="2">★★ (2)</option>
+          <option value="1">★ (1)</option>
+        </select>
+        <textarea id="fbText" maxlength="800" data-ph="fbPh"></textarea>
+        <button id="fbSend" type="button" data-i18n="fbSend"></button>
+      </div>
       <div id="supBox"></div>
       <p class="hint" id="myUidText" style="padding-top:10px;word-break:break-all"></p>
       <button class="row danger" id="logoutBtn" data-i18n="logout"></button>
@@ -459,6 +690,7 @@
       <option value="reports">Report Management</option>
       <option value="rooms">Room Management</option>
       <option value="users">User Management</option>
+      <option value="roommates">Roommate Posts</option>
       <option value="approval">Room Approval Settings</option>
       <option value="security">Security Settings</option>
       <option value="profile">Admin Profile and Preferences</option>
@@ -468,6 +700,7 @@
   </div>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script type="module" src="app.js"></script>
 <script>
 /* Install as an app: lets the phone offer "Add to Home screen". */

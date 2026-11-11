@@ -9,6 +9,8 @@ const REASONS = {
   fake_photos: "Fake photos",
   wrong_contact: "Incorrect contact details",
   suspicious: "Suspicious activity",
+  already_rented: "Already rented",
+  broker_money: "Asks for money in advance",
   other: "Other",
   fake: "Fake or scam (old report)",
   rented: "Already rented (old report)",
@@ -26,9 +28,10 @@ const LOG_L = {
   verify_owner: "Owner verified", unverify_owner: "Owner verification removed",
   fix_old_rooms: "Old rooms fixed", report_reviewed: "Report marked reviewed",
   report_resolved: "Report marked resolved", report_rejected: "Report rejected",
-  user_block: "User blocked", user_unblock: "User unblocked"
+  user_block: "User blocked", user_unblock: "User unblocked",
+  roommate_remove: "Roommate post removed"
 };
-const TAB_IDS = ["overview", "reports", "rooms", "users", "approval", "security", "profile", "activity"];
+const TAB_IDS = ["overview", "reports", "rooms", "users", "roommates", "approval", "security", "profile", "activity"];
 const PHOTO_OK = /^data:image\/jpeg;base64,[A-Za-z0-9+\/=]+$/;
 const LINE = "border-top:1px solid var(--border);margin-top:8px;padding-top:8px";
 const SHOW_MAX = 40;
@@ -46,6 +49,8 @@ export function initAdmin(c) {
   let usersAll = [];
   let blockedSet = new Set();
   let rmToken = 0;
+  let rmaAll = [];
+  let rmaQuery = "";
   try { current = localStorage.getItem("vhubaAdminTab") || "overview"; } catch (e) {}
   if (TAB_IDS.indexOf(current) === -1) current = "overview";
 
@@ -203,7 +208,8 @@ export function initAdmin(c) {
     await batch.commit();
   }
 
-  /* Block: the person cannot add rooms or send reports, their rooms are hidden, and they are logged out when they open the app. */
+  /* Block: the person cannot add rooms or send reports, their rooms are hidden, their roommate post
+     is removed, and they are logged out when they open the app. */
   async function blockUser(uid) {
     if (uid === c.getUid()) { alert("You cannot block yourself."); return false; }
     const ans = prompt("Block this user - reason (required, only admins see it):", "");
@@ -214,6 +220,7 @@ export function initAdmin(c) {
     const b = writeBatch(db);
     b.set(doc(db, "blocked", uid), { reason: reason, by: c.getUid(), createdAt: serverTimestamp() });
     mine.forEach((r) => { b.update(doc(db, "rooms", r.id), { hidden: true, hiddenReason: "Account blocked" }); });
+    b.delete(doc(db, "roommates", uid));
     b.set(doc(collection(db, "adminLogs")), logDoc({
       action: "user_block", targetType: "user", targetId: uid, ownerId: uid, reason: reason
     }));
@@ -247,6 +254,63 @@ export function initAdmin(c) {
     await batch.commit();
   }
 
+  /* ---------- CSV DOWNLOAD ---------- */
+  /* A cell that starts with = + - or @ could run as a formula in Excel, so a quote mark is put in front. */
+  function csvCell(v) {
+    let s = (v === null || v === undefined) ? "" : String(v);
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+
+  function downloadCsv(name, rows) {
+    const text = "\ufeff" + rows.map((r) => r.map(csvCell).join(",")).join("\r\n");
+    const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => { URL.revokeObjectURL(url); }, 3000);
+  }
+
+  async function exportCsv(kind) {
+    const day = new Date().toISOString().slice(0, 10);
+    const iso = (ts) => (ts && ts.toDate) ? ts.toDate().toISOString() : "";
+    if (kind === "rooms") {
+      const rows = [["id", "title", "type", "location", "area", "city", "country", "price", "currency", "deposit",
+        "approval", "status", "hidden", "reports", "for_who", "facilities", "available_from", "phone", "owner_id", "created"]];
+      c.getRooms().forEach((r) => {
+        rows.push([r.id, r.title, r.type, r.loc, r.area, r.city, c.country(r), r.price, r.currency, r.deposit,
+          apOf(r), r.status, r.hidden ? "yes" : "no", r.reportCount || 0, r.forWho || "",
+          Array.isArray(r.amenities) ? r.amenities.join(" | ") : "", r.availFrom || "",
+          r.phone ? ("+" + (r.cc || "") + r.phone) : "", r.uid, iso(r.createdAt)]);
+      });
+      downloadCsv("vhuba-rooms-" + day + ".csv", rows);
+    } else if (kind === "users") {
+      const snap = await getDocs(query(collection(db, "users"), limit(500)));
+      const rows = [["id", "name", "email", "email_verified", "phone", "phone_verified", "country", "joined", "last_active"]];
+      snap.docs.forEach((d) => {
+        const u = d.data();
+        rows.push([d.id, u.name, u.email, u.emailVerified === true ? "yes" : "no",
+          u.phone ? ("+" + (u.phoneCc || "") + u.phone) : "", u.phoneVerified === true ? "yes" : "no",
+          u.country || "", iso(u.createdAt), iso(u.lastActive)]);
+      });
+      downloadCsv("vhuba-users-" + day + ".csv", rows);
+    } else if (kind === "roommates") {
+      const snap = await getDocs(query(collection(db, "roommates"), limit(500)));
+      const rows = [["user_id", "name", "looking_for", "gender", "wants", "country", "budget", "currency", "city", "area",
+        "food", "smoking", "work", "move_in", "phone", "about", "updated"]];
+      snap.docs.forEach((d) => {
+        const p = d.data();
+        rows.push([d.id, p.name, p.kind, p.gender, p.want, p.country, p.budget, p.currency, p.city, p.area,
+          p.diet, p.smoking, p.work, p.moveIn, p.phone ? ("+" + (p.cc || "") + p.phone) : "", p.about, iso(p.updatedAt)]);
+      });
+      downloadCsv("vhuba-roommates-" + day + ".csv", rows);
+    }
+  }
+
   /* ---------- OVERVIEW AND ANALYTICS ---------- */
   async function cnt(q) {
     try { return (await getCountFromServer(q)).data().count; } catch (e) { return "?"; }
@@ -276,7 +340,10 @@ export function initAdmin(c) {
       cnt(query(R, where("approval", "==", "approved"))),
       cnt(query(R, where("approval", "==", "needs_review"))),
       cnt(query(R, where("approval", "==", "rejected"))),
-      cnt(query(R, where("reportCount", ">=", 1)))
+      cnt(query(R, where("reportCount", ">=", 1))),
+      cnt(query(collection(db, "roommates"))),
+      cnt(query(collection(db, "reviews"))),
+      cnt(query(collection(db, "contacts")))
     ]);
     let l24 = 0, o24 = 0;
     try {
@@ -332,8 +399,18 @@ export function initAdmin(c) {
         stat("Reported rooms", v[11], "at least one report")
       ]) +
       (legacy > 0 ? '<p class="mini">⚠ ' + legacy + ' old rooms have no approval status. Open Room Approval Settings and press "Fix old rooms".</p>' : '') +
+      '<h3 class="title">Community</h3>' +
+      grid([
+        stat("Roommate posts", v[12]),
+        stat("Owner reviews", v[13]),
+                stat("Contact taps", v[14], "Call, WhatsApp or visit taps (one per person per room)")
+      ]) +
       '<div><button class="act" data-a="goto" data-tab="rooms" data-filter="pending">Open pending rooms</button>' +
       '<button class="act gray" data-a="goto" data-tab="reports">Open new reports</button></div>' +
+      '<h3 class="title" style="margin-top:16px">Download (CSV)</h3>' +
+      '<div><button class="act" data-a="csv" data-kind="rooms">Rooms CSV</button>' +
+      '<button class="act gray" data-a="csv" data-kind="users">Users CSV</button>' +
+      '<button class="act gray" data-a="csv" data-kind="roommates">Roommate posts CSV</button></div>' +
       '<h3 class="title" style="margin-top:16px">Notifications</h3>' +
       '<div class="card" style="margin:0">' + (fh || '<p class="mini">Nothing new yet.</p>') + '</div>';
   }
@@ -456,7 +533,6 @@ export function initAdmin(c) {
       box.innerHTML = '<div class="empty">Could not load. Check rules and admin setup.</div>';
     }
   }
-
   /* ---------- ROOM MANAGEMENT ---------- */
   function roomMatchesFilter(r, f) {
     if (f === "all") return true;
@@ -562,6 +638,70 @@ export function initAdmin(c) {
         '</div></div>';
     });
     box.innerHTML = html || '<div class="empty">No users found.</div>';
+  }
+
+  /* ---------- ROOMMATE POSTS (new) ---------- */
+  async function roommatesTab() {
+    body().innerHTML = '<input id="rmaSearch" placeholder="Search name, city, phone or ID">' +
+      '<p id="rmaSummary" class="mini"></p><div id="rmaList"><div class="empty">Loading...</div></div>';
+    $("rmaSearch").value = rmaQuery;
+    $("rmaSearch").addEventListener("input", () => { rmaQuery = $("rmaSearch").value.trim().toLowerCase(); renderRmPosts(); });
+    try {
+      const snap = await getDocs(query(collection(db, "roommates"), limit(300)));
+      rmaAll = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      rmaAll.sort((a, b) => ms(b.updatedAt) - ms(a.updatedAt));
+      try {
+        const bs = await getDocs(collection(db, "blocked"));
+        blockedSet = new Set(bs.docs.map((d) => d.id));
+      } catch (e) {}
+      renderRmPosts();
+    } catch (e) {
+      if ($("rmaList")) $("rmaList").innerHTML = '<div class="empty">Could not load. Check rules and admin setup.</div>';
+    }
+  }
+
+  function renderRmPosts() {
+    const box = $("rmaList");
+    if (!box) return;
+    let list = rmaAll;
+    if (rmaQuery) {
+      list = rmaAll.filter((p) => [p.name, p.city, p.area, p.phone, p.id].join(" ").toLowerCase().indexOf(rmaQuery) !== -1);
+    }
+    $("rmaSummary").textContent = list.length + " posts found" + (list.length > SHOW_MAX ? " (showing first " + SHOW_MAX + ")" : "") + " · " + rmaAll.length + " loaded";
+    let html = "";
+    list.slice(0, SHOW_MAX).forEach((p) => {
+      html += '<div class="card" style="margin:12px 0"><h3 style="padding-right:0">' + esc(p.name || "-") + '</h3>' +
+        tag(p.kind === "haveRoom" ? "Has a room" : "Needs a room", p.kind === "haveRoom" ? "ok" : "new") +
+        tag(p.gender || "") +
+        (blockedSet.has(p.id) ? tag("Blocked", "bad") : "") +
+        '<p>' + esc(p.city || "") + (p.area ? ', ' + esc(p.area) : '') + ' · ' + esc(p.country || "") + '</p>' +
+        '<p>Budget: ' + esc(String(p.budget == null ? "" : p.budget)) + ' ' + esc(p.currency || "") + ' / month</p>' +
+        '<p class="mini">Wants: ' + esc(p.want || "") + ' · Food: ' + esc(p.diet || "") + ' · Smoking: ' + esc(p.smoking || "") +
+        ' · Work: ' + esc(p.work || "") + '</p>' +
+        (p.moveIn ? '<p class="mini">Move in: ' + esc(p.moveIn) + '</p>' : '') +
+        '<p class="mini">Phone: ' + esc(p.phone ? ("+" + (p.cc || "") + " " + p.phone) : "-") + '</p>' +
+        (p.about ? '<p>' + esc(p.about) + '</p>' : '') +
+        '<p class="mini">Updated: ' + esc(fts(p.updatedAt) || "-") + '</p>' +
+        '<p class="mini">User ID: ' + esc(p.id) + '</p>' +
+        '<div style="' + LINE + '">' +
+        '<button class="del" data-a="rmdel" data-uid="' + esc(p.id) + '">Remove this post</button>' +
+        (p.id === c.getUid() ? '' : '<button class="del" data-a="ublock" data-uid="' + esc(p.id) + '">Block this user</button>') +
+        '</div></div>';
+    });
+    box.innerHTML = html || '<div class="empty">No roommate posts here.</div>';
+  }
+
+  async function removeRoommatePost(uid) {
+    if (!confirm("Remove this roommate post? The person can post again later.")) return false;
+    const ans = prompt("Reason (optional, only admins see it):", "");
+    if (ans === null) return false;
+    const b = writeBatch(db);
+    b.delete(doc(db, "roommates", uid));
+    b.set(doc(collection(db, "adminLogs")), logDoc({
+      action: "roommate_remove", targetType: "roommate", targetId: uid, ownerId: uid, reason: ans.trim().slice(0, 300)
+    }));
+    await b.commit();
+    return true;
   }
 
   /* ---------- ROOM APPROVAL SETTINGS ---------- */
@@ -688,6 +828,7 @@ export function initAdmin(c) {
       else if (current === "reports") await reportsTab();
       else if (current === "rooms") await roomsTab();
       else if (current === "users") await usersTab();
+      else if (current === "roommates") await roommatesTab();
       else if (current === "approval") approvalTab();
       else if (current === "security") await securityTab();
       else if (current === "profile") profileTab();
@@ -738,12 +879,17 @@ export function initAdmin(c) {
       } else if (a === "ublock") {
         const ok = await blockUser(g("data-uid"));
         if (ok) {
-          alert("User blocked and their rooms hidden.");
+          alert("User blocked, their rooms hidden and their roommate post removed.");
           if (current === "users") renderUsers(); else await load();
         }
       } else if (a === "uunblock") {
         const ok = await unblockUser(g("data-uid"));
         if (ok) { if (current === "users") renderUsers(); else await load(); }
+      } else if (a === "rmdel") {
+        const ok = await removeRoommatePost(g("data-uid"));
+        if (ok) await load();
+      } else if (a === "csv") {
+        await exportCsv(g("data-kind"));
       } else if (a === "vadd") {
         const id = ($("vidInput").value || "").trim();
         if (!id) { alert("Paste the owner ID first."); }

@@ -60,6 +60,12 @@ export function initSettings(c) {
       const uid = auth.currentUser.uid;
       const docs = await myRooms();
       for (const d of docs) { await deleteDoc(d.ref); }
+      /* roommate post and the reviews I wrote */
+      try { await deleteDoc(doc(db, "roommates", uid)); } catch (e) {}
+      try {
+        const rs = await getDocs(query(collection(db, "reviews"), where("uid", "==", uid)));
+        for (const r of rs.docs) { await deleteDoc(r.ref); }
+      } catch (e) {}
       try { await deleteDoc(doc(db, "publicProfiles", uid)); } catch (e) {}
       await deleteDoc(doc(db, "users", uid));
       await deleteUser(auth.currentUser);
@@ -92,6 +98,27 @@ export function initSettings(c) {
       $("reportText").value = "";
       msg("reportSent");
     } catch (e) { msg("errGeneric"); }
+  });
+
+  /* Feedback and app rating. It is saved as a "problem" report that starts with [Feedback ...],
+     so the admin sees it in Report Management. */
+  $("fbSend").addEventListener("click", async () => {
+    const rate = $("fbRate").value;
+    const text = $("fbText").value.trim();
+    if (!rate) { msg("fbNeed"); return; }
+    $("fbSend").disabled = true;
+    try {
+      await addDoc(collection(db, "reports"), {
+        type: "problem",
+        text: ("[Feedback \u2605" + rate + "] " + text).slice(0, 1000),
+        uid: auth.currentUser.uid,
+        createdAt: serverTimestamp()
+      });
+      $("fbRate").value = "";
+      $("fbText").value = "";
+      msg("fbDone");
+    } catch (e) { msg("errGeneric"); }
+    $("fbSend").disabled = false;
   });
 
   $("logoutBtn").addEventListener("click", c.doLogout);

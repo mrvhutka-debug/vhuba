@@ -3,7 +3,7 @@ import {
   sendEmailVerification, sendPasswordResetEmail, GoogleAuthProvider, signInWithPopup,
   PhoneAuthProvider, RecaptchaVerifier, updatePhoneNumber, linkWithCredential,
   doc, getDoc, setDoc, updateDoc, collection, addDoc, deleteDoc, getDocs, where,
-  onSnapshot, query, orderBy, limit, serverTimestamp, writeBatch
+  onSnapshot, query, orderBy, limit, serverTimestamp, writeBatch, getCountFromServer
 } from "./firebase.js";
 import en from "./en.js";
 import hi from "./hi.js";
@@ -26,28 +26,50 @@ const SUPPORT_EMAIL = "";
    add rooms, but those rooms stay Pending until an admin approves them. */
 const REQUIRE_PHONE_FOR_OWNERS = false;
 
+/* NEW: SMS phone verification needs Firebase billing. While it is false, all phone-verify
+   buttons and messages are hidden. Set it to true when billing is on. */
+const SHOW_PHONE_VERIFY = false;
+
+/* NEW: small extra texts that are not in the translation files */
+const P = {
+  en: { verifyToPost: "To post as a roommate, please verify your email first. You do not need this for searching rooms or calling owners." },
+  hi: { verifyToPost: "रूममेट पोस्ट बनाने के लिए पहले अपना ईमेल सत्यापित करें। कमरे खोजने या मालिकों को कॉल करने के लिए इसकी ज़रूरत नहीं है।" },
+  ne: { verifyToPost: "रुममेट पोस्ट बनाउन पहिले आफ्नो इमेल प्रमाणित गर्नुहोस्। कोठा खोज्न वा मालिकलाई फोन गर्न यो आवश्यक छैन।" }
+};
+
 const T = {
-  en: Object.assign({}, en, X.en, Y.en, Z.en, W.en),
-  hi: Object.assign({}, hi, X.hi, Y.hi, Z.hi, W.hi),
-  ne: Object.assign({}, ne, X.ne, Y.ne, Z.ne, W.ne)
+  en: Object.assign({}, en, X.en, Y.en, Z.en, W.en, P.en),
+  hi: Object.assign({}, hi, X.hi, Y.hi, Z.hi, W.hi, P.hi),
+  ne: Object.assign({}, ne, X.ne, Y.ne, Z.ne, W.ne, P.ne)
 };
 
 const TITLE_KEY = {
   home: "navHome", find: "navFind", favs: "navFavs", notices: "navNotices",
-  mine: "navMine", settings: "navSettings", admin: "navAdmin", profile: "navProfile", owner: "navOwner"
+  mine: "navMine", settings: "navSettings", admin: "navAdmin", profile: "navProfile", owner: "navOwner",
+  room: "navRoom", map: "navMap", roommates: "navRoommates", tools: "navTools"
 };
-const VIEWS = ["home", "find", "favs", "notices", "mine", "settings", "admin", "profile", "owner"];
+const VIEWS = ["home", "find", "favs", "notices", "mine", "settings", "admin", "profile", "owner", "room", "map", "roommates", "tools"];
 const DAY = 24 * 60 * 60 * 1000;
 const LIFE_DAYS = 30;
 const REPORT_LIMIT = 3;
-const MAX_PHOTOS = 2;
+const MAX_PHOTOS = 4;
 const MAX_ROOMS = 5;
 const PAGE = 20;
 const CUR = { IN: "INR", NP: "NPR" };
 const BUDGETS = { IN: [3000, 3500, 4000, 5000], NP: [5000, 8000, 10000, 15000] };
 const DEPOSITS = { IN: [5000, 10000], NP: [8000, 16000] };
-const EMPTY_F = { q: "", type: "", loc: "", country: "", budget: "", dep: "", ex: "", own: "", sort: "new" };
+const EMPTY_F = { q: "", type: "", loc: "", country: "", budget: "", dep: "", ex: "", own: "", fw: "", am: "", sort: "new" };
 const PHOTO_OK = /^data:image\/jpeg;base64,[A-Za-z0-9+\/=]+$/;
+
+/* NEW: facilities, house rules, who the room is for */
+const AMEN = ["wifi", "ac", "geyser", "bath", "parking", "furnished", "water", "backup", "kitchen"];
+const AMEN_KEY = {
+  wifi: "amWifi", ac: "amAc", geyser: "amGeyser", bath: "amBath", parking: "amParking",
+  furnished: "amFurnished", water: "amWater", backup: "amBackup", kitchen: "amKitchen"
+};
+const RULE_KEY = { vegOnly: "ruVeg", noSmoking: "ruNoSmoke", petsOk: "ruPets" };
+const FW_KEY = { any: "fwAny", boys: "fwBoys", girls: "fwGirls", family: "fwFamily" };
+const FWF_KEY = { boys: "fwfBoys", girls: "fwfGirls", family: "fwfFamily" };
 
 let lang = "en";
 let tab = "login";
@@ -86,6 +108,25 @@ let recaptcha = null;
 let ownerUid = "";
 let ownerBack = "home";
 let renderTimer = null;
+
+/* NEW state */
+let roomCache = {};
+let viewRoomId = null;
+let roomBack = "home";
+let contactCounts = {};
+let reviewsCache = {};
+let rvFilledFor = "";
+let mapObj = null;
+let mapLayer = null;
+let rmData = [];
+let rmLoaded = false;
+let rmFormOpen = false;
+let filtersOpen = false;
+let pendingRoom = "";
+try {
+  const pr = new URLSearchParams(location.search).get("room");
+  if (pr && /^[A-Za-z0-9_-]{5,80}$/.test(pr)) pendingRoom = pr;
+} catch (e) {}
 
 const $ = (id) => document.getElementById(id);
 
@@ -164,7 +205,9 @@ function showView(v) {
   if (v === "admin") admin.load();
   if (v === "notices") { renderNotices(); markNoticesRead(); }
   if (v === "profile") renderProfile();
-  if (v === "mine") updateNudge();
+  if (v === "mine") { updateNudge(); loadContactCounts(); }
+  if (v === "map") renderMap();
+  if (v === "roommates") openRoommates();
   if (v === "find" && profile) {
     seenBefore = profile.lastSeen || Date.now();
     profile.lastSeen = Date.now();
@@ -431,6 +474,16 @@ async function doLogout() {
   afterVerify = "";
   verifySentFor = "";
   pvId = null;
+  roomCache = {};
+  contactCounts = {};
+  reviewsCache = {};
+  rvFilledFor = "";
+  rmData = [];
+  rmLoaded = false;
+  rmFormOpen = false;
+  viewRoomId = null;
+  filtersOpen = false;
+  $("fBox").classList.remove("open");
   if (recaptcha) { try { recaptcha.clear(); } catch (e) {} recaptcha = null; }
   closeReport();
   closeEdit();
@@ -440,13 +493,14 @@ async function doLogout() {
   await signOut(auth);
 }
 
-/* ---------- EMAIL VERIFY (only needed to rent out a room, or to report a room) ---------- */
+/* ---------- EMAIL VERIFY (needed to rent out a room, report a room, write a review or post as a roommate) ---------- */
 function needVerify(kind) {
   const u = auth.currentUser;
   if (!u || u.emailVerified) return false;
-  afterVerify = (kind === "rent") ? "mine" : "";
+  afterVerify = (kind === "rent") ? "mine" : (kind === "post") ? "roommates" : "";
+  const keys = { rent: "verifyToRent", review: "verifyToReview", post: "verifyToPost" };
   $("verifyEmail").textContent = u.email || "";
-  $("vWhy").textContent = T[lang][kind === "rent" ? "verifyToRent" : "verifyToReport"];
+  $("vWhy").textContent = T[lang][keys[kind] || "verifyToReport"];
   $("vMsg").textContent = "";
   show("verifyScreen");
   if (verifySentFor !== u.uid) {
@@ -471,6 +525,8 @@ async function checkVerified() {
       if (to === "mine") {
         if (REQUIRE_PHONE_FOR_OWNERS && !phoneVerifiedNow()) { alert(T[lang].needPhone); showView("profile"); }
         else showView("mine");
+      } else if (to === "roommates") {
+        showView("roommates");
       }
     } else {
       $("vMsg").textContent = "Not verified yet. Open the link in the email first, then press this button again.";
@@ -494,7 +550,6 @@ async function resendVerify() {
   }
   setTimeout(() => { resendBusy = false; $("vResend").disabled = false; }, 60000);
 }
-
 /* ---------- LANGUAGE AND HIDE-PHONE (used by Settings and Profile) ---------- */
 async function changeLang(l) {
   lang = l;
@@ -585,6 +640,13 @@ function route() {
   show("appScreen");
   startRooms();
   startHeartbeat();
+  /* NEW: someone opened a shared room link (?room=ID) */
+  if (pendingRoom) {
+    const rid = pendingRoom;
+    pendingRoom = "";
+    try { history.replaceState(null, "", location.pathname); } catch (e) {}
+    openRoom(rid, "home");
+  }
 }
 
 onAuthStateChanged(auth, async (user) => {
@@ -649,7 +711,7 @@ function setupSupport(t) {
   let h = "";
   if (SUPPORT_WA) {
     h += '<a class="call wa" href="https://wa.me/' + esc(digits(SUPPORT_WA)) +
-      '" target="_blank" rel="noopener">' +esc(t.supWa) + '</a>';
+      '" target="_blank" rel="noopener">' + esc(t.supWa) + '</a>';
   }
   if (SUPPORT_EMAIL) {
     h += '<a class="call map" href="mailto:' + esc(SUPPORT_EMAIL) + '">' + esc(t.supMail) + '</a>';
@@ -702,10 +764,11 @@ function updateCurrencyUI() {
   $("deposit").placeholder = t.depositPh2.replace("{cur}", cur);
 }
 
+/* The "verify my phone" box is shown only when SHOW_PHONE_VERIFY is true (needs Firebase billing). */
 function updateNudge() {
   const t = T[lang];
   $("nudgeText").textContent = t.nudgeText;
-  $("phoneNudge").style.display = (auth.currentUser && !phoneVerifiedNow()) ? "block" : "none";
+  $("phoneNudge").style.display = (SHOW_PHONE_VERIFY && auth.currentUser && !phoneVerifiedNow()) ? "block" : "none";
 }
 
 function applyLang() {
@@ -715,6 +778,8 @@ function applyLang() {
   document.querySelectorAll("[data-ph]").forEach((el) => { el.placeholder = t[el.getAttribute("data-ph")]; });
   $("policyText").innerHTML = t.privText;
   $("policyText2").innerHTML = t.privText;
+  $("safeBody").innerHTML = t.safeHtml;
+  $("fToggle").textContent = filtersOpen ? t.filtersHide : t.filtersBtn;
   $("lang").value = lang;
   $("pfLang").value = lang;
   $("hello").textContent = profile ? (t.hello + profile.name) : "";
@@ -723,10 +788,12 @@ function applyLang() {
   $("locInfo").textContent = pendingLoc ? t.locGot : "";
   buildPriceFilters();
   updateCurrencyUI();
+  updateRmCurrency();
   updateNudge();
   setupSupport(t);
   updateNoticeBadge();
   if (currentView === "profile") renderProfileDyn();
+  if (currentView === "roommates") renderRoommates();
   render();
 }
 
@@ -749,6 +816,19 @@ function isLive(r) {
   return apOf(r) === "approved" && !isRented(r) && !isExpired(r) && !isReported(r) && !r.hidden;
 }
 function hasLoc(r) { return typeof r.lat === "number" && typeof r.lng === "number"; }
+
+/* NEW: find a room in the loaded list, or in the rooms opened from a link */
+function findRoom(id) {
+  return roomsData.find((x) => x.id === id) || roomCache[id] || null;
+}
+
+/* NEW: show a date typed as YYYY-MM-DD in the phone's own date style */
+function fmtDay(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ""));
+  if (!m) return "";
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return isNaN(d.getTime()) ? "" : d.toLocaleDateString();
+}
 
 /* ---------- LOCATION ---------- */
 function getPos() {
@@ -851,7 +931,7 @@ function photosHtml(r) {
 
 function openBig(val) {
   const parts = String(val).split("|");
-  const r = roomsData.find((x) => x.id === parts[0]);
+  const r = findRoom(parts[0]);
   const p = r && Array.isArray(r.photos) ? r.photos[Number(parts[1])] : null;
   if (typeof p === "string" && PHOTO_OK.test(p)) {
     $("bigImg").src = p;
@@ -863,7 +943,6 @@ function closeBig() {
   $("bigModal").classList.remove("open");
   $("bigImg").removeAttribute("src");
 }
-
 /* ---------- FILTERS, SORT, SAVED SEARCH ---------- */
 function readFilters() {
   return {
@@ -875,6 +954,8 @@ function readFilters() {
     dep: $("depFilter").value,
     ex: $("exFilter").value,
     own: $("ownFilter").value,
+    fw: $("fwFilter").value,
+    am: $("amFilter").value,
     sort: $("sortBy").value
   };
 }
@@ -902,6 +983,9 @@ function matches(r, f) {
   }
   if (f.ex === "incl" && r.extras !== "exIncl") return false;
   if (f.own === "owner" && r.ownerType !== "owner") return false;
+  /* NEW: rooms for "anyone" (or old rooms with no choice) fit every group */
+  if (f.fw && r.forWho && r.forWho !== "any" && r.forWho !== f.fw) return false;
+  if (f.am && !(Array.isArray(r.amenities) && r.amenities.indexOf(f.am) !== -1)) return false;
   return true;
 }
 
@@ -933,6 +1017,8 @@ function describe(f, t) {
   else if (f.dep) p.push(t.depUpto.replace("{n}", money(f.dep, cur)));
   if (f.ex === "incl") p.push(t.exInclOnly);
   if (f.own === "owner") p.push(t.ownOnly);
+  if (f.fw && FWF_KEY[f.fw]) p.push(t[FWF_KEY[f.fw]]);
+  if (f.am && AMEN_KEY[f.am]) p.push(t.amMust.replace("{x}", t[AMEN_KEY[f.am]]));
   p.push(t[f.sort === "low" ? "sLow" : f.sort === "high" ? "sHigh" : f.sort === "near" ? "sNear" : "sNew"]);
   return p.join(" · ");
 }
@@ -949,6 +1035,8 @@ function applySaved() {
   setSel("depFilter", f.dep || "");
   setSel("exFilter", f.ex || "");
   setSel("ownFilter", f.own || "");
+  setSel("fwFilter", f.fw || "");
+  setSel("amFilter", f.am || "");
   setSel("sortBy", f.sort || "new");
   if (f.sort === "near" && !myPos) {
     getPos().then((p) => { myPos = p; render(); }).catch(function () {});
@@ -988,6 +1076,13 @@ async function onSortChange() {
     }
   }
   render();
+}
+
+/* NEW: the Filters button opens and closes the filter box */
+function toggleFilters() {
+  filtersOpen = !filtersOpen;
+  $("fBox").classList.toggle("open", filtersOpen);
+  $("fToggle").textContent = filtersOpen ? T[lang].filtersHide : T[lang].filtersBtn;
 }
 
 /* ---------- FAVOURITES ---------- */
@@ -1117,6 +1212,7 @@ function stopRooms() {
   roomsData = [];
 }
 
+/* ---------- ROOM CARD PIECES ---------- */
 function checksHtml(r, t) {
   const photo = Array.isArray(r.photos) && r.photos.length >= 1;
   const emailOk = !!(auth.currentUser && auth.currentUser.emailVerified);
@@ -1125,7 +1221,7 @@ function checksHtml(r, t) {
   const line = (ok, txt) => '<p class="hint" style="padding:2px 0">' + (ok ? "✔ " : "✘ ") + esc(txt) + '</p>';
   return '<p class="hint" style="padding:6px 0 0"><b>' + esc(t.chkTitle) + '</b></p>' +
     line(photo, t.chkPhoto) + line(emailOk, t.chkEmail) + line(nameOk, t.chkName) +
-    line(phoneOk, phoneOk ? t.chkPhoneOk : t.chkPhone) +
+    (SHOW_PHONE_VERIFY ? line(phoneOk, phoneOk ? t.chkPhoneOk : t.chkPhone) : '') +
     (photo ? '' : '<p class="hint" style="padding:2px 0">' + esc(t.noPhotoWarn) + '</p>');
 }
 
@@ -1155,15 +1251,29 @@ function cardTop(r, t) {
   const ctTag = '<span class="tag">' + esc(t["tag" + c]) + '</span>';
   const distTag = (myPos && hasLoc(r))
     ? '<span class="tag">' + esc(t.kmAway.replace("{n}", distKm(myPos, r).toFixed(1))) + '</span>' : '';
+  /* NEW tags: who the room is for, available-from date, facilities, house rules */
+  const fwTag = (r.forWho && r.forWho !== "any" && FW_KEY[r.forWho])
+    ? '<span class="tag">' + esc(t[FW_KEY[r.forWho]]) + '</span>' : '';
+  const avDay = fmtDay(r.availFrom);
+  const avTag = avDay ? '<span class="tag">' + esc(t.availTag.replace("{d}", avDay)) + '</span>' : '';
+  let am = "";
+  if (Array.isArray(r.amenities)) {
+    AMEN.forEach((k) => { if (r.amenities.indexOf(k) !== -1) am += '<span class="tag ok">' + esc(t[AMEN_KEY[k]]) + '</span>'; });
+  }
+  let ru = "";
+  if (Array.isArray(r.rules)) {
+    Object.keys(RULE_KEY).forEach((k) => { if (r.rules.indexOf(k) !== -1) ru += '<span class="tag">' + esc(t[RULE_KEY[k]]) + '</span>'; });
+  }
+  const extra = (am || ru) ? '<div style="margin:6px 0">' + am + ru + '</div>' : '';
   const dep = (r.deposit === undefined || r.deposit === null) ? '' :
     '<p>' + esc(t.depositLabel) + ': ' +
     (Number(r.deposit) > 0 ? esc(money(r.deposit, cur)) : esc(t.noDeposit)) + '</p>';
   const desc = r.description ? '<p>' + esc(r.description) + '</p>' : '';
-  return '<h3>' + esc(r.title || "") + '</h3>' +
+  return '<h3 data-open="' + esc(r.id) + '" style="cursor:pointer">' + esc(r.title || "") + '</h3>' +
     '<span class="tag">' + esc(t[r.type] || "") + '</span>' +
-    '<span class="tag">' + esc(t[r.loc] || "") + '</span>' + ctTag + exTag + ownTag + apTag + phTag + verTag + distTag +
+    '<span class="tag">' + esc(t[r.loc] || "") + '</span>' + ctTag + exTag + ownTag + fwTag + avTag + apTag + phTag + verTag + distTag +
     '<p>' + esc(t.areaLabel) + ': ' + esc(r.area || "") + (r.city ? ', ' + esc(r.city) : '') + '</p>' +
-    '<p class="price">' + esc(money(r.price, cur)) + ' ' + esc(t.perMonth) + '</p>' + dep + desc +
+    '<p class="price">' + esc(money(r.price, cur)) + ' ' + esc(t.perMonth) + '</p>' + dep + extra + desc +
     photosHtml(r);
 }
 
@@ -1171,21 +1281,48 @@ function shareBtn(r, t) {
   return '<button class="rep" data-share="' + esc(r.id) + '">' + esc(t.shareBtn) + '</button>';
 }
 
+/* Call, WhatsApp and "ask to visit". Every one of these links has data-contact, so the app can
+   show the safety reminder first (see contactClick) and count the contact for the owner. */
 function contactBtns(r, t) {
   const num = digits(r.phone);
   const cc = digits(r.cc) || "91";
+  const rid = esc(r.id);
+  const ask = (k) => encodeURIComponent(t[k].replace("{title}", r.title || ""));
   let h = "";
   if (!num) {
     h += '<div class="phoneoff">' + esc(t.phoneHidden) + '</div>';
   } else {
-    h += '<a class="call" href="tel:' + esc(num) + '">' + esc(t.call) + '</a>' +
-      '<a class="call wa" href="https://wa.me/' + esc(cc + num) + '" target="_blank" rel="noopener">WhatsApp</a>';
+    h += '<a class="call" data-contact="' + rid + '" href="tel:' + esc(num) + '">' + esc(t.call) + '</a>' +
+      '<a class="call wa" data-contact="' + rid + '" href="https://wa.me/' + esc(cc + num) + '?text=' + ask("waMsg") +
+      '" target="_blank" rel="noopener">WhatsApp</a>' +
+      '<a class="call visit" data-contact="' + rid + '" href="https://wa.me/' + esc(cc + num) + '?text=' + ask("waVisit") +
+      '" target="_blank" rel="noopener">' + esc(t.visitBtn) + '</a>';
   }
   if (hasLoc(r)) {
     h += '<a class="call map" href="https://www.google.com/maps?q=' + r.lat + ',' + r.lng +
       '" target="_blank" rel="noopener">' + esc(t.openMap) + '</a>';
   }
   return h + shareBtn(r, t);
+}
+
+/* NEW: write one small record so the owner can see how many people contacted them.
+   If this person already contacted this room, the database refuses and we just ignore it. */
+async function recordContact(rid) {
+  const r = findRoom(rid);
+  if (!r || !auth.currentUser || r.uid === auth.currentUser.uid) return;
+  try {
+    await setDoc(doc(db, "contacts", rid + "_" + auth.currentUser.uid), {
+      roomId: rid, ownerId: r.uid, uid: auth.currentUser.uid, createdAt: serverTimestamp()
+    });
+  } catch (e) {}
+}
+
+/* NEW: safety reminder before opening Call or WhatsApp */
+function contactClick(e) {
+  const a = (e.target && e.target.closest) ? e.target.closest("a[data-contact]") : null;
+  if (!a) return;
+  if (!confirm(T[lang].contactConfirm)) { e.preventDefault(); return; }
+  recordContact(a.getAttribute("data-contact"));
 }
 
 function ownerBtn(r, t) {
@@ -1198,7 +1335,6 @@ function ownerBtn(r, t) {
 function heartBtn(id, isFav) {
   return '<button class="heart" data-fav="' + esc(id) + '">' + (isFav ? "❤️" : "🤍") + '</button>';
 }
-
 function render() {
   const t = T[lang];
   const myUid = auth.currentUser ? auth.currentUser.uid : "";
@@ -1298,7 +1434,9 @@ function render() {
         '<button class="act gray" data-renew="' + id + '">' + esc(t.btnRenew) + '</button>' +
         shareBtn(r, t);
     }
-    mhtml += '<div class="card">' + cardTop(r, t) + '<div>' + badge + '</div>' + btns + editB +
+    const cn = contactCounts[r.id];
+    const stat = cn > 0 ? '<p class="hint" style="padding:6px 0 0">👥 ' + esc(t.statContacts.replace("{n}", String(cn))) + '</p>' : '';
+    mhtml += '<div class="card">' + cardTop(r, t) + '<div>' + badge + '</div>' + stat + btns + editB +
       '<button class="del" data-del="' + id + '">' + esc(t.del) + '</button></div>';
   });
   if (mcount === 0) mhtml = '<div class="empty">' + esc(t.noMine) + '</div>';
@@ -1307,7 +1445,28 @@ function render() {
   if (isAdmin && currentView === "admin") admin.onRooms();
   if (currentView === "owner" && ownerUid) renderOwner(ownerUid);
   if (currentView === "profile") renderProfileDyn();
+  if (currentView === "room" && viewRoomId) renderRoomView();
   prefetchOwners(shown.concat(favRooms));
+}
+
+/* NEW: for each of my rooms, count how many different people tapped Call or WhatsApp */
+async function loadContactCounts() {
+  if (!auth.currentUser) return;
+  const uid = auth.currentUser.uid;
+  const mine = roomsData.filter((r) => r.uid === uid);
+  await Promise.all(mine.map(async (r) => {
+    try {
+      const s = await getCountFromServer(query(collection(db, "contacts"),
+        where("ownerId", "==", uid), where("roomId", "==", r.id)));
+      contactCounts[r.id] = s.data().count;
+    } catch (e) {}
+  }));
+  if (currentView === "mine") render();
+}
+
+/* ---------- ADD ROOM ---------- */
+function checkedValues(cls) {
+  return Array.prototype.slice.call(document.querySelectorAll("." + cls + ":checked")).map((x) => x.value);
 }
 
 async function addRoom() {
@@ -1326,6 +1485,10 @@ async function addRoom() {
   const cc = $("cc").value;
   const phone = $("phone").value.trim();
   const hide = !!(profile && profile.hidePhone);
+  const forWho = $("forWho").value || "any";
+  const availFrom = $("availFrom").value || "";
+  const amenities = checkedValues("amc");
+  const rules = checkedValues("ruc");
 
   if (!title || !area || !city || !country || !$("price").value.trim() || !extras || !ownerType || (!hide && !phone)) { alert(t.fillAll); return; }
   if (!(price > 0)) { alert(t.badPrice); return; }
@@ -1355,6 +1518,7 @@ async function addRoom() {
       title: title, area: area, city: city, loc: loc, country: country, currency: CUR[country],
       price: price, deposit: deposit, extras: extras,
       ownerType: ownerType, type: type, cc: cc, phone: hide ? "" : phone,
+      forWho: forWho, availFrom: availFrom, amenities: amenities, rules: rules,
       status: "available", reportCount: 0,
       approval: approval, approvalBy: approvalBy,
       uid: auth.currentUser.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
@@ -1386,6 +1550,9 @@ async function addRoom() {
       $("ownerType").value = "";
       $("desc").value = "";
       $("photos").value = "";
+      $("forWho").value = "any";
+      $("availFrom").value = "";
+      document.querySelectorAll(".amc, .ruc").forEach((x) => { x.checked = false; });
       pendingPhotos = [];
       showPreviews();
       clearLocation();
@@ -1423,12 +1590,12 @@ async function renewRoom(id) {
   }
 }
 
-/* ---------- SHARE A ROOM (share sheet of the phone, or WhatsApp as backup) ---------- */
+/* ---------- SHARE A ROOM (every room has its own link: ?room=ID) ---------- */
 async function shareRoom(id) {
-  const r = roomsData.find((x) => x.id === id);
+  const r = findRoom(id);
   if (!r) return;
   const t = T[lang];
-  const url = location.origin + location.pathname;
+  const url = location.origin + location.pathname + "?room=" + encodeURIComponent(id);
   const text = t.shareMsg
     .replace("{title}", r.title || "")
     .replace("{area}", (r.area || "") + (r.city ? ", " + r.city : ""))
@@ -1446,7 +1613,7 @@ async function shareRoom(id) {
 
 /* ---------- EDIT MY ROOM ---------- */
 function openEdit(id) {
-  const r = roomsData.find((x) => x.id === id);
+  const r = findRoom(id);
   if (!r || !auth.currentUser || r.uid !== auth.currentUser.uid) return;
   const t = T[lang];
   const cur = CUR[roomCountry(r)];
@@ -1460,6 +1627,14 @@ function openEdit(id) {
   $("edDeposit").value = (r.deposit === undefined || r.deposit === null) ? "" : r.deposit;
   setSel("edExtras", r.extras || "");
   setSel("edOwnerType", r.ownerType || "");
+  setSel("edForWho", r.forWho || "any");
+  $("edAvail").value = r.availFrom || "";
+  document.querySelectorAll(".edam").forEach((x) => {
+    x.checked = Array.isArray(r.amenities) && r.amenities.indexOf(x.value) !== -1;
+  });
+  document.querySelectorAll(".edru").forEach((x) => {
+    x.checked = Array.isArray(r.rules) && r.rules.indexOf(x.value) !== -1;
+  });
   $("edDesc").value = r.description || "";
   $("edPrice").placeholder = t.rentPh2.replace("{cur}", cur);
   $("edDeposit").placeholder = t.depositPh2.replace("{cur}", cur);
@@ -1474,7 +1649,7 @@ function closeEdit() {
 async function saveEdit() {
   const t = T[lang];
   const id = editingId;
-  const r = roomsData.find((x) => x.id === id);
+  const r = findRoom(id);
   if (!id || !r) { closeEdit(); return; }
   const title = $("edTitle").value.trim();
   const area = $("edArea").value.trim();
@@ -1487,6 +1662,10 @@ async function saveEdit() {
   const extras = $("edExtras").value;
   const ownerType = $("edOwnerType").value;
   const desc = $("edDesc").value.trim().slice(0, 500);
+  const forWho = $("edForWho").value || "any";
+  const availFrom = $("edAvail").value || "";
+  const amenities = checkedValues("edam");
+  const rules = checkedValues("edru");
 
   if (!title || !area || !city || !$("edPrice").value.trim() || !extras || !ownerType) { alert(t.fillAll); return; }
   if (!(price > 0)) { alert(t.badPrice); return; }
@@ -1494,7 +1673,9 @@ async function saveEdit() {
 
   const upd = {
     title: title, area: area, city: city, loc: loc, type: type, price: price, deposit: deposit,
-    extras: extras, ownerType: ownerType, description: desc, updatedAt: serverTimestamp()
+    extras: extras, ownerType: ownerType, description: desc,
+    forWho: forWho, availFrom: availFrom, amenities: amenities, rules: rules,
+    updatedAt: serverTimestamp()
   };
   /* Rooms approved by phone verification stay approved. All other rooms go back to Pending,
      so an admin checks the new details. */
@@ -1516,9 +1697,14 @@ async function saveEdit() {
   }
   $("edSave").disabled = false;
 }
-
 /* ---------- MY PROFILE (private page) ---------- */
 function updatePhoneUI() {
+  /* While SMS verification is switched off (SHOW_PHONE_VERIFY = false), hide all of it. */
+  if (!SHOW_PHONE_VERIFY) {
+    $("pfPhoneBadge").innerHTML = "";
+    $("pvSend").style.display = "none";
+    return;
+  }
   const t = T[lang];
   const u = auth.currentUser;
   if (!u) return;
@@ -1566,8 +1752,8 @@ function renderProfile() {
   $("pfPhoto").value = "";
   $("pvStep2").style.display = "none";
   $("pvCode").value = "";
-  $("pvMsg").textContent = "";
-  $("pvInfo").textContent = "";
+  $("pvMsg") && ($("pvMsg").textContent = "");
+  $("pvInfo") && ($("pvInfo").textContent = "");
   renderProfileDyn();
 }
 
@@ -1626,7 +1812,7 @@ async function saveProfile() {
   $("pfSave").disabled = false;
 }
 
-/* ---------- PHONE VERIFICATION BY SMS CODE (owners) ---------- */
+/* ---------- PHONE VERIFICATION BY SMS CODE (hidden while SHOW_PHONE_VERIFY is false) ---------- */
 function phoneError(code) {
   const t = T[lang];
   const map = {
@@ -1654,20 +1840,19 @@ function resetRecaptcha() {
 
 async function sendOtp() {
   const t = T[lang];
-  $("pvMsg").textContent = "";
-  $("pvInfo").textContent = "";
+  const msgBox = (txt) => { alert(txt); };
   const cc = $("pfCc").value;
   const num = digits($("pfPhone").value);
-  if (!/^[0-9]{10}$/.test(num)) { $("pvMsg").textContent = t.pvErrInvalid; return; }
+  if (!/^[0-9]{10}$/.test(num)) { msgBox(t.pvErrInvalid); return; }
   $("pvSend").disabled = true;
   try {
     if (!recaptcha) recaptcha = new RecaptchaVerifier(auth, "pvCaptcha", { size: "invisible" });
     const provider = new PhoneAuthProvider(auth);
     pvId = await provider.verifyPhoneNumber("+" + cc + num, recaptcha);
     $("pvStep2").style.display = "block";
-    $("pvInfo").textContent = t.pvSent;
+    msgBox(t.pvSent);
   } catch (e) {
-    $("pvMsg").textContent = phoneError(e.code);
+    msgBox(phoneError(e.code));
     resetRecaptcha();
   }
   $("pvSend").disabled = false;
@@ -1675,9 +1860,8 @@ async function sendOtp() {
 
 async function confirmOtp() {
   const t = T[lang];
-  $("pvMsg").textContent = "";
   const code = digits($("pvCode").value);
-  if (code.length !== 6 || !pvId) { $("pvMsg").textContent = t.pvErrCode; return; }
+  if (code.length !== 6 || !pvId) { alert(t.pvErrCode); return; }
   $("pvConfirm").disabled = true;
   try {
     const u = auth.currentUser;
@@ -1696,11 +1880,11 @@ async function confirmOtp() {
     resetRecaptcha();
     $("pvStep2").style.display = "none";
     $("pvCode").value = "";
-    $("pvInfo").textContent = t.pvDone;
+    alert(t.pvDone);
     renderProfileDyn();
     updateNudge();
   } catch (e) {
-    $("pvMsg").textContent = phoneError(e.code);
+    alert(phoneError(e.code));
   }
   $("pvConfirm").disabled = false;
 }
@@ -1709,8 +1893,10 @@ async function confirmOtp() {
 async function openOwner(uid) {
   if (currentView !== "owner") ownerBack = currentView;
   ownerUid = uid;
+  rvFilledFor = "";
   showView("owner");
   renderOwner(uid);
+  loadReviews(uid);
   try {
     const s = await getDoc(doc(db, "publicProfiles", uid));
     pubCache[uid] = s.exists() ? s.data() : null;
@@ -1747,11 +1933,179 @@ function renderOwner(uid) {
       (uid === myUid ? '<span class="tag">' + esc(t.yours) + '</span>' + shareBtn(r, t) : contactBtns(r, t)) + '</div>';
   });
   $("ovRooms").innerHTML = h || '<div class="empty">' + esc(t.ovNone) + '</div>';
+  renderReviews(uid);
+}
+
+/* ---------- OWNER REVIEWS (1 to 5 stars, one review per person) ---------- */
+function starText(n) {
+  const k = Math.max(0, Math.min(5, Math.round(Number(n) || 0)));
+  return "★".repeat(k) + "☆".repeat(5 - k);
+}
+
+async function loadReviews(uid) {
+  try {
+    const s = await getDocs(query(collection(db, "reviews"), where("ownerId", "==", uid), limit(100)));
+    reviewsCache[uid] = s.docs.map((d) => ({ id: d.id, ...d.data() }));
+  } catch (e) {
+    if (!reviewsCache[uid]) reviewsCache[uid] = [];
+  }
+  if (ownerUid === uid) {
+    fillMyReview(uid);
+    renderReviews(uid);
+  }
+}
+
+/* put my old review into the form, only once each time the owner page is opened */
+function fillMyReview(uid) {
+  if (rvFilledFor === uid) return;
+  rvFilledFor = uid;
+  const me = auth.currentUser ? auth.currentUser.uid : "";
+  const mine = (reviewsCache[uid] || []).find((x) => x.uid === me);
+  $("rvStars").value = mine ? String(mine.rating) : "5";
+  $("rvComment").value = mine ? (mine.comment || "") : "";
+}
+
+function renderReviews(uid) {
+  const t = T[lang];
+  const me = auth.currentUser ? auth.currentUser.uid : "";
+  const list = (reviewsCache[uid] || []).slice().sort((a, b) => nms(b) - nms(a));
+  const hasMine = list.some((x) => x.uid === me);
+
+  if (list.length) {
+    let sum = 0;
+    list.forEach((x) => { sum += Number(x.rating) || 0; });
+    const avg = sum / list.length;
+    $("ovRating").innerHTML = '<p class="stars" style="margin:0">' + starText(avg) + '</p>' +
+      '<p class="hint" style="padding:0 0 8px 0">' +
+      esc(t.rvAvg.replace("{avg}", avg.toFixed(1)).replace("{n}", String(list.length))) + '</p>';
+  } else {
+    $("ovRating").innerHTML = '<p class="hint" style="padding:0 0 8px 0">' + esc(t.rvNone) + '</p>';
+  }
+
+  $("rvBox").style.display = (me && uid && uid !== me) ? "block" : "none";
+  $("rvDel").style.display = hasMine ? "block" : "none";
+  $("rvSave").textContent = hasMine ? t.rvEdit : t.rvSave;
+
+  let h = "";
+  list.forEach((x) => {
+    const when = (x.createdAt && x.createdAt.toDate) ? x.createdAt.toDate().toLocaleDateString() : "";
+    h += '<div class="rvitem"><p><span class="stars">' + starText(x.rating) + '</span> <b>' + esc(x.name || "") + '</b></p>' +
+      (x.comment ? '<p>' + esc(x.comment) + '</p>' : '') +
+      '<p class="mini">' + esc(when) + '</p>' +
+      (isAdmin ? '<button class="del" data-rvdel="' + esc(x.id) + '">' + esc(t.rvAdminDel) + '</button>' : '') +
+      '</div>';
+  });
+  $("ovReviews").innerHTML = h;
+}
+
+async function saveReview() {
+  const t = T[lang];
+  const uid = ownerUid;
+  const me = auth.currentUser;
+  if (!uid || !me) return;
+  if (uid === me.uid) { alert(t.rvSelf); return; }
+  if (needVerify("review")) return;
+  const rating = Number($("rvStars").value);
+  const comment = $("rvComment").value.trim().slice(0, 300);
+  if (!(rating >= 1 && rating <= 5)) return;
+  const mine = (reviewsCache[uid] || []).find((x) => x.uid === me.uid);
+  $("rvSave").disabled = true;
+  try {
+    const ref = doc(db, "reviews", uid + "_" + me.uid);
+    if (mine) {
+      await updateDoc(ref, { rating: rating, comment: comment, name: String(profile.name || "").trim() });
+    } else {
+      await setDoc(ref, {
+        ownerId: uid, uid: me.uid, name: String(profile.name || "").trim(),
+        rating: rating, comment: comment, createdAt: serverTimestamp()
+      });
+    }
+    rvFilledFor = "";
+    await loadReviews(uid);
+    alert(t.rvSaved);
+  } catch (e) {
+    alert(t.errGeneric + " (" + (e.code || e.message) + ")");
+  }
+  $("rvSave").disabled = false;
+}
+
+async function deleteMyReview() {
+  const t = T[lang];
+  const uid = ownerUid;
+  const me = auth.currentUser;
+  if (!uid || !me) return;
+  if (!confirm(t.rvDelConfirm)) return;
+  try {
+    await deleteDoc(doc(db, "reviews", uid + "_" + me.uid));
+    rvFilledFor = "";
+    await loadReviews(uid);
+  } catch (e) {
+    alert(t.errGeneric);
+  }
+}
+
+/* admin can delete any review from the owner page */
+async function reviewListClick(e) {
+  const id = e.target && e.target.getAttribute ? e.target.getAttribute("data-rvdel") : "";
+  if (!id) return;
+  if (!confirm(T[lang].rvDelConfirm)) return;
+  try {
+    await deleteDoc(doc(db, "reviews", id));
+    await loadReviews(ownerUid);
+  } catch (err) {
+    alert(T[lang].errGeneric);
+  }
+}
+
+/* ---------- ROOM DETAIL PAGE (the shared link opens this) ---------- */
+let roomLoading = false;
+
+async function openRoom(id, back) {
+  if (currentView !== "room") roomBack = back || currentView;
+  viewRoomId = id;
+  showView("room");
+  if (!findRoom(id)) {
+    roomLoading = true;
+    renderRoomView();
+    try {
+      const s = await getDoc(doc(db, "rooms", id));
+      if (s.exists()) roomCache[id] = { id: s.id, ...s.data() };
+    } catch (e) {}
+    roomLoading = false;
+  }
+  if (viewRoomId === id) renderRoomView();
+}
+
+function renderRoomView() {
+  const t = T[lang];
+  const box = $("roomBody");
+  const r = findRoom(viewRoomId);
+  if (!r) {
+    box.innerHTML = '<div class="empty">' + (roomLoading ? "..." : esc(t.rmGone)) + '</div>';
+    return;
+  }
+  const myUid = auth.currentUser ? auth.currentUser.uid : "";
+  const mine = r.uid === myUid;
+  if (!(isLive(r) || mine || isAdmin)) {
+    box.innerHTML = '<div class="empty">' + esc(t.rmGone) + '</div>';
+    return;
+  }
+  const favs = (profile && profile.favs) || [];
+  let h = '<div class="card" style="margin:12px 0">' + (mine ? '' : heartBtn(r.id, favs.indexOf(r.id) !== -1)) + cardTop(r, t);
+  if (mine) {
+    h += '<span class="tag">' + esc(t.yours) + '</span>' + shareBtn(r, t);
+  } else {
+    h += contactBtns(r, t) + ownerBtn(r, t) +
+      '<button class="rep" data-rep="' + esc(r.id) + '">' + esc(t.reportRoom) + '</button>';
+  }
+  h += '</div>';
+  box.innerHTML = h;
+  prefetchOwners([r]);
 }
 
 /* ---------- REPORT (needs a verified email) ---------- */
 async function openReport(id) {
-  const r = roomsData.find((x) => x.id === id);
+  const r = findRoom(id);
   if (!r || !auth.currentUser) return;
   if (needVerify("report")) return;
   try {
@@ -1775,7 +2129,7 @@ function closeReport() {
 async function sendReport() {
   const t = T[lang];
   const id = reportingId;
-  const r = roomsData.find((x) => x.id === id);
+  const r = findRoom(id);
   if (!id || !r) { closeReport(); return; }
   const uid = auth.currentUser.uid;
   const reason = $("reportReason").value;
@@ -1814,7 +2168,338 @@ function listClick(e) {
   else if (g("data-big")) openBig(g("data-big"));
   else if (g("data-share")) shareRoom(g("data-share"));
   else if (g("data-edit")) openEdit(g("data-edit"));
+  else if (g("data-open")) openRoom(g("data-open"));
   else if (g("data-more")) { listLimit += PAGE; render(); }
+}
+/* ---------- ROOMMATE FINDER ---------- */
+const RM_GENDER = { male: "gnMale", female: "gnFemale", other: "gnOther" };
+const RM_WANT = { any: "wnAny", male: "wnMale", female: "wnFemale" };
+const RM_DIET = { veg: "dtVeg", nonveg: "dtNonveg", any: "dtAny" };
+const RM_SMOKE = { no: "smNo", yes: "smYes" };
+const RM_WORK = { student: "wkStudent", working: "wkWorking", other: "wkOther" };
+let rmErr = false;
+
+const rmMs = (p) => (p.updatedAt && p.updatedAt.toMillis) ? p.updatedAt.toMillis() : 0;
+
+function myRmPost() {
+  const me = auth.currentUser ? auth.currentUser.uid : "";
+  return rmData.find((p) => p.uid === me) || null;
+}
+
+async function loadRoommates() {
+  try {
+    const s = await getDocs(query(collection(db, "roommates"), limit(150)));
+    rmData = s.docs.map((d) => ({ id: d.id, ...d.data() }));
+    rmLoaded = true;
+    rmErr = false;
+  } catch (e) {
+    rmErr = true;
+  }
+}
+
+async function openRoommates() {
+  rmFormOpen = false;
+  renderRoommates();
+  await loadRoommates();
+  if (currentView === "roommates") renderRoommates();
+}
+
+/* Match %: location, budget, food, smoking and work. Different countries or a gender
+   choice that does not fit gives 0. */
+function matchScore(a, b) {
+  const lc = (x) => String(x || "").trim().toLowerCase();
+  if (a.country !== b.country) return 0;
+  if (a.want && a.want !== "any" && a.want !== b.gender) return 0;
+  if (b.want && b.want !== "any" && b.want !== a.gender) return 0;
+  let s = 0;
+  if (lc(a.city) && lc(a.city) === lc(b.city)) s += 30;
+  if (lc(a.area) && lc(a.area) === lc(b.area)) s += 10;
+  const lo = Math.min(Number(a.budget), Number(b.budget));
+  const hi = Math.max(Number(a.budget), Number(b.budget));
+  if (hi > 0) {
+    const ratio = lo / hi;
+    s += ratio >= 0.8 ? 30 : ratio >= 0.6 ? 20 : ratio >= 0.4 ? 10 : 0;
+  }
+  if (a.diet === b.diet || a.diet === "any" || b.diet === "any") s += 10;
+  if (a.smoking === b.smoking) s += 10;
+  if (a.work === b.work) s += 5;
+  return Math.round(s / 95 * 100);
+}
+
+function rmCard(p, mine, score) {
+  const t = T[lang];
+  const cur = CUR[p.country] || "INR";
+  const tg = (txt, cls) => '<span class="tag ' + (cls || "") + '">' + esc(txt) + '</span>';
+  let tags = tg(p.kind === "haveRoom" ? t.rmTagHave : t.rmTagNeed, p.kind === "haveRoom" ? "ok" : "new");
+  if (RM_GENDER[p.gender]) tags += tg(t[RM_GENDER[p.gender]]);
+  if (RM_WORK[p.work]) tags += tg(t[RM_WORK[p.work]]);
+  if (RM_DIET[p.diet]) tags += tg(t[RM_DIET[p.diet]]);
+  if (RM_SMOKE[p.smoking]) tags += tg(t[RM_SMOKE[p.smoking]]);
+  if (mine) tags += tg(t.rmMineTag);
+  else if (score >= 0) tags += tg(t.rmMatch.replace("{n}", String(score)), "new");
+
+  const wantTxt = RM_WANT[p.want] ? t.rmWantLbl + ": " + t[RM_WANT[p.want]] : "";
+  const mv = fmtDay(p.moveIn);
+  let h = '<div class="card" style="margin:12px 0"><h3 style="padding-right:0">' + esc(p.name || "") + '</h3>' + tags +
+    '<p>' + esc(p.city || "") + (p.area ? ', ' + esc(p.area) : '') + '</p>' +
+    '<p class="price">' + esc(t.rmBudgetLbl) + ': ' + esc(money(p.budget, cur)) + ' ' + esc(t.perMonth) + '</p>' +
+    (wantTxt ? '<p class="mini">' + esc(wantTxt) + '</p>' : '') +
+    (mv ? '<p class="mini">' + esc(t.rmMoveLbl) + ': ' + esc(mv) + '</p>' : '') +
+    (p.about ? '<p>' + esc(p.about) + '</p>' : '');
+
+  if (mine) {
+    h += '<button class="act gray" type="button" data-rm="edit">' + esc(t.rmEditBtn) + '</button>' +
+      '<button class="del" type="button" data-rm="del">' + esc(t.rmDelBtn) + '</button>';
+  } else {
+    const num = digits(p.phone);
+    const cc = digits(p.cc) || "91";
+    if (num) {
+      h += '<a class="call" href="tel:' + esc(num) + '">' + esc(t.call) + '</a>' +
+        '<a class="call wa" href="https://wa.me/' + esc(cc + num) + '?text=' + encodeURIComponent(t.rmWaMsg) +
+        '" target="_blank" rel="noopener">WhatsApp</a>';
+    }
+    h += '<button class="rep" type="button" data-rm="report" data-uid="' + esc(p.uid) + '">' + esc(t.rmReportBtn) + '</button>';
+  }
+  return h + '</div>';
+}
+
+function renderRoommates() {
+  const t = T[lang];
+  $("rmFormBox").style.display = rmFormOpen ? "block" : "none";
+  $("rmMine").style.display = rmFormOpen ? "none" : "block";
+  $("rmBrowse").style.display = rmFormOpen ? "none" : "block";
+  if (rmFormOpen) return;
+
+  const me = auth.currentUser ? auth.currentUser.uid : "";
+  const mine = myRmPost();
+  let mh = '<h3 class="title">' + esc(t.rmMyPost) + '</h3>';
+  if (!rmLoaded && !rmErr) {
+    mh += '<div class="empty">...</div>';
+  } else if (mine) {
+    mh += rmCard(mine, true, -1);
+  } else if (rmErr) {
+    mh += '<div class="empty">' + esc(t.errGeneric) + '</div>';
+  } else {
+    mh += '<p class="hint" style="padding:0 0 8px 0">' + esc(t.rmNoPost) + '</p>' +
+      '<button class="act" type="button" data-rm="new">' + esc(t.rmCreate) + '</button>';
+  }
+  $("rmMine").innerHTML = mh;
+
+  if (!rmLoaded) {
+    $("rmList").innerHTML = rmErr ? '<div class="empty">' + esc(t.errGeneric) + '</div>' : '<div class="empty">...</div>';
+    return;
+  }
+  const q = $("rmSearch").value.trim().toLowerCase();
+  const kf = $("rmKindFilter").value;
+  let list = rmData.filter((p) => p.uid !== me);
+  if (kf) list = list.filter((p) => p.kind === kf);
+  if (q) {
+    list = list.filter((p) => (String(p.city || "") + " " + String(p.area || "") + " " + String(p.name || "")).toLowerCase().indexOf(q) !== -1);
+  }
+  const scored = list.map((p) => ({ p: p, s: mine ? matchScore(mine, p) : -1 }));
+  scored.sort((a, b) => (b.s - a.s) || (rmMs(b.p) - rmMs(a.p)));
+  let h = "";
+  scored.slice(0, 60).forEach((x) => { h += rmCard(x.p, false, x.s); });
+  $("rmList").innerHTML = h || '<div class="empty">' + esc(t.rmNone) + '</div>';
+}
+
+function updateRmCurrency() {
+  const t = T[lang];
+  const c = $("rmCountry").value;
+  const cur = c ? (CUR[c] + (c === "IN" ? " ₹" : "")) : t.chooseCountryFirst;
+  $("rmBudget").placeholder = t.rmBudgetPh.replace("{cur}", cur);
+}
+
+function openRmForm() {
+  if (needVerify("post")) return;
+  const mine = myRmPost();
+  const p = mine || {};
+  const pc = (profile && (profile.country === "IN" || profile.country === "NP")) ? profile.country : "";
+  $("rmKind").value = p.kind || "haveRoom";
+  $("rmGender").value = p.gender || "male";
+  $("rmWant").value = p.want || "any";
+  $("rmCountry").value = p.country || pc;
+  $("rmBudget").value = p.budget || "";
+  $("rmCity").value = p.city || "";
+  $("rmArea").value = p.area || "";
+  $("rmDiet").value = p.diet || "any";
+  $("rmSmoke").value = p.smoking || "no";
+  $("rmWork").value = p.work || "student";
+  $("rmMove").value = p.moveIn || "";
+  $("rmAbout").value = p.about || "";
+  $("rmCc").value = p.cc || (profile && profile.phoneCc) || "91";
+  $("rmPhone").value = p.phone || (profile && profile.phone) || "";
+  $("rmAgree").checked = !!mine;
+  updateRmCurrency();
+  rmFormOpen = true;
+  renderRoommates();
+  window.scrollTo(0, 0);
+}
+
+function closeRmForm() {
+  rmFormOpen = false;
+  renderRoommates();
+}
+
+async function saveRoommate() {
+  const t = T[lang];
+  if (needVerify("post")) return;
+  const uid = auth.currentUser.uid;
+  const country = $("rmCountry").value;
+  const budget = Number($("rmBudget").value);
+  const city = $("rmCity").value.trim().slice(0, 60);
+  const phone = digits($("rmPhone").value);
+  if (!country || !(budget > 0) || !city || !phone) { alert(t.rmNeedFields); return; }
+  if (!/^[0-9]{10}$/.test(phone)) { alert(t.badPhone); return; }
+  if (!$("rmAgree").checked) { alert(t.rmNeedAgree); return; }
+
+  const data = {
+    uid: uid,
+    name: String(profile.name || ""),
+    kind: $("rmKind").value,
+    gender: $("rmGender").value,
+    want: $("rmWant").value,
+    country: country,
+    currency: CUR[country],
+    budget: budget,
+    city: city,
+    area: $("rmArea").value.trim().slice(0, 120),
+    diet: $("rmDiet").value,
+    smoking: $("rmSmoke").value,
+    work: $("rmWork").value,
+    moveIn: $("rmMove").value || "",
+    about: $("rmAbout").value.trim().slice(0, 300),
+    cc: $("rmCc").value,
+    phone: phone,
+    updatedAt: serverTimestamp()
+  };
+  const exists = !!myRmPost();
+  $("rmSave").disabled = true;
+  try {
+    const ref = doc(db, "roommates", uid);
+    if (exists) {
+      await updateDoc(ref, data);
+    } else {
+      data.createdAt = serverTimestamp();
+      await setDoc(ref, data);
+    }
+    rmFormOpen = false;
+    await loadRoommates();
+    renderRoommates();
+    alert(t.rmSaved);
+  } catch (e) {
+    alert(t.errGeneric + " (" + (e.code || e.message) + ")");
+  }
+  $("rmSave").disabled = false;
+}
+
+async function deleteRoommate() {
+  const t = T[lang];
+  if (!confirm(t.rmDelConfirm)) return;
+  try {
+    await deleteDoc(doc(db, "roommates", auth.currentUser.uid));
+    await loadRoommates();
+    renderRoommates();
+  } catch (e) {
+    alert(t.errGeneric);
+  }
+}
+
+/* A roommate post is reported as a "problem" report, so the admin sees it in Report Management. */
+async function reportRoommate(postUid) {
+  const t = T[lang];
+  const p = rmData.find((x) => x.uid === postUid);
+  const reason = prompt(t.rmReportPrompt, "");
+  if (reason === null) return;
+  const why = reason.trim();
+  if (why.length < 3) return;
+  try {
+    await addDoc(collection(db, "reports"), {
+      type: "problem",
+      text: ("[Roommate post report] user: " + postUid + " name: " + (p ? p.name : "") + " reason: " + why).slice(0, 1000),
+      uid: auth.currentUser.uid,
+      createdAt: serverTimestamp()
+    });
+    alert(t.reportSent);
+  } catch (e) {
+    alert(t.errGeneric);
+  }
+}
+
+async function rmClick(e) {
+  const el = e.target && e.target.closest ? e.target.closest("[data-rm]") : null;
+  if (!el) return;
+  const a = el.getAttribute("data-rm");
+  if (a === "new" || a === "edit") openRmForm();
+  else if (a === "del") await deleteRoommate();
+  else if (a === "report") await reportRoommate(el.getAttribute("data-uid"));
+}
+
+/* ---------- MAP (OpenStreetMap through Leaflet, free) ---------- */
+function renderMap() {
+  const t = T[lang];
+  const msg = $("mapMsg");
+  msg.textContent = "";
+  if (typeof L === "undefined") { msg.textContent = t.mapFail; return; }
+  if (!mapObj) {
+    mapObj = L.map("mapBox").setView([24, 82], 5);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19, attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(mapObj);
+    mapLayer = L.layerGroup().addTo(mapObj);
+  }
+  mapLayer.clearLayers();
+  const pts = [];
+  roomsData.filter((r) => isLive(r) && hasLoc(r)).forEach((r) => {
+    const m = L.circleMarker([r.lat, r.lng], {
+      radius: 10, color: "#1e40af", weight: 2, fillColor: "#2563eb", fillOpacity: 0.9
+    });
+    const div = document.createElement("div");
+    div.innerHTML = '<b>' + esc(r.title || "") + '</b><br>' +
+      esc(money(r.price, CUR[roomCountry(r)])) + ' ' + esc(t.perMonth) + '<br>';
+    const a = document.createElement("a");
+    a.href = "#";
+    a.className = "mapbtn";
+    a.textContent = t.mapOpen;
+    a.addEventListener("click", (ev) => { ev.preventDefault(); openRoom(r.id, "map"); });
+    div.appendChild(a);
+    m.bindPopup(div);
+    m.addTo(mapLayer);
+    pts.push([r.lat, r.lng]);
+  });
+  if (!pts.length) msg.textContent = t.mapNone;
+  setTimeout(() => {
+    if (!mapObj) return;
+    mapObj.invalidateSize();
+    if (pts.length) mapObj.fitBounds(pts, { padding: [30, 30], maxZoom: 15 });
+  }, 150);
+}
+
+/* ---------- RENT AND BILL SPLIT CALCULATOR ---------- */
+function calcSplit() {
+  const t = T[lang];
+  const n = (id) => { const v = Number($(id).value); return (isFinite(v) && v > 0) ? v : 0; };
+  const people = Math.floor(Number($("tcPeople").value));
+  if (!(people >= 1)) { alert(t.tlNeedPeople); return; }
+  const total = n("tcRent") + n("tcElec") + n("tcWater") + n("tcNet") + n("tcOther");
+  const fmt = (x) => x.toLocaleString("en-IN", { maximumFractionDigits: 2 });
+  $("tcResult").innerHTML = '<div class="result">' + esc(t.tlEach) + ': ' + esc(fmt(total / people)) +
+    '<small>' + esc(t.tlTotal) + ': ' + esc(fmt(total)) + ' / ' + people + '</small></div>';
+}
+
+/* ---------- INVITE FRIENDS ---------- */
+async function inviteFriends() {
+  const t = T[lang];
+  const url = location.origin + location.pathname;
+  try {
+    if (navigator.share) {
+      await navigator.share({ title: "Vhuba", text: t.inviteMsg, url: url });
+      return;
+    }
+  } catch (e) {
+    if (e && e.name === "AbortError") return;
+  }
+  window.open("https://wa.me/?text=" + encodeURIComponent(t.inviteMsg + " " + url), "_blank", "noopener");
 }
 
 /* ---------- EVENTS ---------- */
@@ -1845,6 +2530,9 @@ $("mHome").addEventListener("click", () => showView("home"));
 $("mProfile").addEventListener("click", () => showView("profile"));
 $("mFavs").addEventListener("click", () => showView("favs"));
 $("mNotices").addEventListener("click", () => showView("notices"));
+$("mRoommates").addEventListener("click", () => showView("roommates"));
+$("mMap").addEventListener("click", () => showView("map"));
+$("mTools").addEventListener("click", () => showView("tools"));
 $("mSettings").addEventListener("click", () => { settings.sync(); showView("settings"); });
 $("mAdmin").addEventListener("click", () => showView("admin"));
 $("mLogout").addEventListener("click", doLogout);
@@ -1856,6 +2544,8 @@ $("goMine").addEventListener("click", () => {
   if (REQUIRE_PHONE_FOR_OWNERS && !phoneVerifiedNow()) { alert(T[lang].needPhone); showView("profile"); return; }
   showView("mine");
 });
+$("goRoommates").addEventListener("click", () => showView("roommates"));
+$("inviteBtn").addEventListener("click", inviteFriends);
 $("nudgeBtn").addEventListener("click", () => showView("profile"));
 $("backFind").addEventListener("click", () => showView("home"));
 $("backFavs").addEventListener("click", () => showView("home"));
@@ -1865,6 +2555,10 @@ $("backHome").addEventListener("click", () => showView("home"));
 $("backAdmin").addEventListener("click", () => showView("home"));
 $("backProfile").addEventListener("click", () => showView("home"));
 $("backOwner").addEventListener("click", () => { ownerUid = ""; showView(ownerBack || "home"); });
+$("backRoom").addEventListener("click", () => { viewRoomId = null; showView(roomBack || "home"); });
+$("backMap").addEventListener("click", () => showView("home"));
+$("backRoommates").addEventListener("click", () => showView("home"));
+$("backTools").addEventListener("click", () => showView("home"));
 
 $("pfPhoto").addEventListener("change", onPfPhoto);
 $("pfPhotoDel").addEventListener("click", removePfPhoto);
@@ -1904,14 +2598,39 @@ $("reportCancel").addEventListener("click", closeReport);
 $("ssSave").addEventListener("click", saveSearch);
 $("ssApply").addEventListener("click", applySaved);
 $("ssClear").addEventListener("click", clearSearch);
+$("fToggle").addEventListener("click", toggleFilters);
 $("list").addEventListener("click", listClick);
 $("favList").addEventListener("click", listClick);
 $("myList").addEventListener("click", listClick);
 $("ovRooms").addEventListener("click", listClick);
+$("roomBody").addEventListener("click", listClick);
 $("search").addEventListener("input", render);
-["typeFilter", "locFilter", "budgetFilter", "depFilter", "exFilter", "ownFilter"].forEach((id) => {
+["typeFilter", "locFilter", "budgetFilter", "depFilter", "exFilter", "ownFilter", "fwFilter", "amFilter"].forEach((id) => {
   $(id).addEventListener("change", render);
 });
 $("sortBy").addEventListener("change", onSortChange);
+
+/* reviews */
+$("rvSave").addEventListener("click", saveReview);
+$("rvDel").addEventListener("click", deleteMyReview);
+$("ovReviews").addEventListener("click", reviewListClick);
+
+/* roommates */
+$("roommatesView").addEventListener("click", rmClick);
+$("rmSave").addEventListener("click", saveRoommate);
+$("rmCancel").addEventListener("click", closeRmForm);
+$("rmSearch").addEventListener("input", renderRoommates);
+$("rmKindFilter").addEventListener("change", renderRoommates);
+$("rmCountry").addEventListener("change", () => {
+  const c = $("rmCountry").value;
+  if (c) $("rmCc").value = (c === "IN") ? "91" : "977";
+  updateRmCurrency();
+});
+
+/* calculator */
+$("tcCalc").addEventListener("click", calcSplit);
+
+/* safety reminder before Call and WhatsApp on any room (list, detail, owner page, favourites) */
+document.addEventListener("click", contactClick);
 
 setTab("login");
