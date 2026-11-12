@@ -202,7 +202,7 @@ function showView(v) {
   VIEWS.forEach((n) => { $(n + "View").style.display = (n === v) ? "block" : "none"; });
   $("pageTitle").textContent = T[lang][TITLE_KEY[v]];
   closeMenu();
-  if (v === "admin") admin.load();
+  if (v === "admin") admin.open();
   if (v === "notices") { renderNotices(); markNoticesRead(); }
   if (v === "profile") renderProfile();
   if (v === "mine") { updateNudge(); loadContactCounts(); }
@@ -1342,7 +1342,7 @@ function render() {
   const saved = profile && profile.savedSearch;
 
   if (isAdmin) {
-    const pc = roomsData.filter((r) => { const a = apOf(r); return a === "pending" || a === "needs_review"; }).length;
+    const pc = roomsData.filter((r) => { const a = apOf(r); return a === "pending" || a === "needs_review" || a === "none"; }).length;
     $("mAdmin").textContent = t.navAdmin + (pc ? " (" + pc + ")" : "");
   }
 

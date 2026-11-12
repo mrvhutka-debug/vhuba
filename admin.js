@@ -818,17 +818,359 @@ export function initAdmin(c) {
       body().innerHTML = '<div class="empty">Could not load. Check rules and admin setup.</div>';
     }
   }
+  /* =====================================================================
+     NEW (v2): room list fix, tap-to-open details, "Needs your attention"
+     ===================================================================== */
+  rFilter = "attention";
+  let attReports = [];
 
+  const stat2 = (label, val, hint, k) =>
+    '<div class="card"' + (k ? ' data-a="drill" data-k="' + k + '"' : '') +
+    ' style="margin:0;padding:10px' + (k ? ';cursor:pointer' : '') + '">' +
+    '<div style="font-size:24px;font-weight:bold">' + esc(String(val)) + '</div>' +
+    '<div>' + esc(label) + (k ? ' ›' : '') + '</div>' +
+    (hint ? '<div class="mini">' + esc(hint) + '</div>' : '') + '</div>';
+
+  /* A small line above each room: is it visible in Find, and if not, why */
+  function liveInfo(r) {
+    const upd = r.updatedAt || r.createdAt;
+    const left = (upd && upd.toMillis) ? Math.ceil((upd.toMillis() + 30 * 86400000 - Date.now()) / 86400000) : 30;
+    let why = "";
+    if (apOf(r) !== "approved") why = "not approved yet";
+    else if (r.hidden) why = "hidden by admin";
+    else if (r.status === "rented") why = "marked as rented";
+    else if (left <= 0) why = "30 days are over (the owner must press Renew)";
+    else if (Number(r.reportCount || 0) >= 3) why = "3 or more reports";
+    return '<div style="margin:12px 0 -6px 0"><span class="tag ' + (why ? "bad" : "ok") + '">' +
+      (why ? "Not visible in Find: " + esc(why) : "✔ Visible in Find") + '</span></div>';
+  }
+
+  const roomCard2 = (r, owner) => liveInfo(r) + roomCard(r, owner);
+
+  async function loadAttReports() {
+    try {
+      const snap = await getDocs(query(collection(db, "reports"), orderBy("createdAt", "desc"), limit(50)));
+      attReports = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((r) => stOf(r) === "new");
+    } catch (e) {
+      attReports = [];
+    }
+  }
+
+  /* Shown at the top of Overview and refreshed live when rooms change */
+  async function renderAttention() {
+    const box = $("attBox");
+    if (!box) return;
+    const todo = c.getRooms()
+      .filter((r) => { const a = apOf(r); return a === "pending" || a === "needs_review" || a === "none"; })
+      .sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
+    const show = todo.slice(0, 5);
+    await Promise.all(show.map((r) => getUser(r.uid)));
+    if (!$("attBox")) return;
+    const cntOf = (x) => todo.filter((r) => apOf(r) === x).length;
+    let h = '<h3 class="title">Needs your attention</h3>';
+    if (!todo.length && !attReports.length) {
+      h += '<div class="card" style="margin:0 0 12px 0"><p>✔ Nothing is waiting for you right now.</p></div>';
+    }
+    if (todo.length) {
+      h += '<p class="mini" style="margin:0">Rooms waiting: ' + cntOf("pending") + ' pending · ' +
+        cntOf("needs_review") + ' needs review · ' + cntOf("none") + ' old (no status)</p>';
+      show.forEach((r) => { h += roomCard2(r, uc[r.uid]); });
+      if (todo.length > show.length) {
+        h += '<button class="act gray" data-a="goto" data-tab="rooms" data-filter="attention">Show all ' + todo.length + ' rooms</button>';
+      }
+      if (cntOf("none") > 0) {
+        h += '<button class="act" data-a="fixold">Approve all old rooms (' + cntOf("none") + ')</button>';
+      }
+    }
+    if (attReports.length) {
+      h += '<p class="mini" style="margin:12px 0 0 0">New reports: ' + attReports.length + '</p>';
+      attReports.slice(0, 3).forEach((rep) => {
+        const why = rep.type === "room" ? (REASONS[rep.reason] || rep.reason || "") : String(rep.text || "").slice(0, 120);
+        h += '<div class="card" style="margin:8px 0"><p class="mini">' +
+          esc(rep.type === "room" ? "Room report" : "Problem or feedback") + '</p><p>' + esc(why) + '</p></div>';
+      });
+      h += '<button class="act gray" data-a="goto" data-tab="reports" data-filter="new">Open new reports</button>';
+    }
+    box.innerHTML = h + '<div style="height:12px"></div>';
+  }
+
+  /* ---------- OVERVIEW (every number can be tapped) ---------- */
+  async function overview2() {
+    const now = Date.now();
+    const day0 = new Date();
+    day0.setHours(0, 0, 0, 0);
+    const U = collection(db, "users");
+    const E = collection(db, "events");
+    const R = collection(db, "rooms");
+    const v = await Promise.all([
+      cnt(query(U)),
+      cnt(query(U, where("createdAt", ">=", day0))),
+      cnt(query(U, where("createdAt", ">=", new Date(now - 7 * 86400000)))),
+      cnt(query(U, where("lastActive", ">=", new Date(now - 5 * 60000)))),
+      cnt(query(E, where("type", "==", "login"))),
+      cnt(query(E, where("type", "==", "logout"))),
+      cnt(query(R)),
+      cnt(query(R, where("approval", "==", "pending"))),
+      cnt(query(R, where("approval", "==", "approved"))),
+      cnt(query(R, where("approval", "==", "needs_review"))),
+      cnt(query(R, where("approval", "==", "rejected"))),
+      cnt(query(R, where("reportCount", ">=", 1))),
+      cnt(query(collection(db, "roommates"))),
+      cnt(query(collection(db, "reviews"))),
+      cnt(query(collection(db, "contacts")))
+    ]);
+    let l24 = 0, o24 = 0;
+    try {
+      const s = await getDocs(query(E, where("createdAt", ">=", new Date(now - 86400000)), orderBy("createdAt", "desc"), limit(500)));
+      s.docs.forEach((d) => { const t = d.data().type; if (t === "login") l24++; if (t === "logout") o24++; });
+    } catch (e) { l24 = "?"; o24 = "?"; }
+
+    let feed = [];
+    try {
+      const fs = await getDocs(query(E, orderBy("createdAt", "desc"), limit(80)));
+      feed = fs.docs.map((d) => d.data()).filter((e) => e.type === "signup" || e.type === "room_added" || e.type === "room_reported").slice(0, 20);
+    } catch (e) {}
+    await Promise.all(feed.map(async (e) => { await getUser(e.uid); if (e.roomId) await getRoom(e.roomId); }));
+    await loadAttReports();
+
+    const total = v[6];
+    const sum = [v[7], v[8], v[9], v[10]].every((x) => typeof x === "number") ? v[7] + v[8] + v[9] + v[10] : null;
+    const legacy = (typeof total === "number" && sum !== null) ? total - sum : 0;
+
+    let fh = "";
+    feed.forEach((e) => {
+      const u = uc[e.uid];
+      const nm = u ? (u.name || "-") : "someone";
+      const room = e.roomId ? rc[e.roomId] : null;
+      const rt = room ? room.title : "(room deleted)";
+      const txt = e.type === "signup" ? "🆕 New registration: " + nm
+        : e.type === "room_added" ? "🏠 New room submitted: " + rt + " (by " + nm + ")"
+        : "🚩 Room reported: " + rt + " (by " + nm + ")";
+      fh += '<p style="margin:6px 0">' + esc(txt) + '<br><span class="mini">' + esc(fts(e.createdAt)) + '</span></p>';
+    });
+
+    if (current !== "overview") return;
+    body().innerHTML =
+      '<div id="attBox"></div>' +
+      '<p class="mini">Tap any number to see its details.</p>' +
+      '<h3 class="title">Users</h3>' +
+      grid([
+        stat2("Registered users", v[0], "accounts in Firebase", "users_all"),
+        stat2("Active now", v[3], "used the app in the last 5 minutes", "users_active"),
+        stat2("New today", v[1], "", "users_today"),
+        stat2("New this week", v[2], "last 7 days", "users_week")
+      ]) +
+      '<h3 class="title">Login and logout events</h3>' +
+      grid([
+        stat2("Login events", v[4], "all time", "ev_login"),
+        stat2("Logout events", v[5], "all time", "ev_logout"),
+        stat2("Logins, last 24h", l24, "latest 500 events", "ev_login24"),
+        stat2("Logouts, last 24h", o24, "latest 500 events", "ev_logout24")
+      ]) +
+      '<p class="mini">Login and logout events are counted when a person presses login or logout in the app. A logout is not an uninstall. Firebase does not tell us about uninstalls, so no uninstall number is shown.</p>' +
+      '<h3 class="title">Rooms</h3>' +
+      grid([
+        stat2("Total rooms published", v[6], "", "rooms_total"),
+        stat2("Pending", v[7], "", "rooms_pending"),
+        stat2("Approved", v[8], "", "rooms_approved"),
+        stat2("Needs review", v[9], "", "rooms_needs_review"),
+        stat2("Rejected", v[10], "", "rooms_rejected"),
+        stat2("Reported rooms", v[11], "at least one report", "rooms_reported")
+      ]) +
+      (legacy > 0 ? '<p class="mini">⚠ ' + legacy + ' old rooms have no approval status. They are listed at the top of this page.</p>' : '') +
+      '<h3 class="title">Community</h3>' +
+      grid([
+        stat2("Roommate posts", v[12], "", "roommates"),
+        stat2("Owner reviews", v[13], "", "reviews"),
+        stat2("Contact taps", v[14], "Call, WhatsApp or visit taps (one per person per room)", "contacts")
+      ]) +
+      '<h3 class="title" style="margin-top:16px">Download (CSV)</h3>' +
+      '<div><button class="act" data-a="csv" data-kind="rooms">Rooms CSV</button>' +
+      '<button class="act gray" data-a="csv" data-kind="users">Users CSV</button>' +
+      '<button class="act gray" data-a="csv" data-kind="roommates">Roommate posts CSV</button></div>' +
+      '<h3 class="title" style="margin-top:16px">Notifications</h3>' +
+      '<div class="card" style="margin:0">' + (fh || '<p class="mini">Nothing new yet.</p>') + '</div>';
+    await renderAttention();
+  }
+
+  /* ---------- DETAILS SCREENS (opened by tapping a number) ---------- */
+  const BACK = '<button class="act gray" data-a="back">← Back to Overview</button>';
+
+  async function drill(k) {
+    body().innerHTML = '<div class="empty">Loading...</div>';
+    try {
+      if (k.indexOf("rooms_") === 0) await drillRooms(k.slice(6));
+      else if (k.indexOf("users_") === 0) await drillUsers(k.slice(6));
+      else if (k.indexOf("ev_") === 0) await drillEvents(k.slice(3));
+      else if (k === "reviews") await drillReviews();
+      else if (k === "contacts") await drillContacts();
+      else if (k === "roommates") await setTab("roommates");
+    } catch (e) {
+      body().innerHTML = BACK + '<div class="empty">Could not load. Check rules and admin setup.</div>';
+    }
+  }
+
+  async function drillRooms(f) {
+    const names = { total: "All rooms", pending: "Pending rooms", approved: "Approved rooms",
+      needs_review: "Rooms that need review", rejected: "Rejected rooms", reported: "Reported rooms" };
+    const list = c.getRooms()
+      .filter((r) => f === "total" ? true : f === "reported" ? Number(r.reportCount || 0) >= 1 : apOf(r) === f)
+      .sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
+    const show = list.slice(0, SHOW_MAX);
+    await Promise.all(show.map((r) => getUser(r.uid)));
+    let h = BACK + '<h3 class="title" style="margin-top:10px">' + esc(names[f] || "Rooms") + ' (' + list.length + ')</h3>';
+    show.forEach((r) => { h += roomCard2(r, uc[r.uid]); });
+    body().innerHTML = h + (list.length ? '' : '<div class="empty">No rooms here.</div>');
+  }
+
+  async function drillUsers(f) {
+    const names = { all: "All registered users", active: "Active now (last 5 minutes)",
+      today: "New users today", week: "New users this week" };
+    const snap = await getDocs(query(collection(db, "users"), limit(500)));
+    const now = Date.now();
+    const day0 = new Date();
+    day0.setHours(0, 0, 0, 0);
+    let list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    if (f === "active") list = list.filter((u) => ms(u.lastActive) >= now - 5 * 60000);
+    else if (f === "today") list = list.filter((u) => ms(u.createdAt) >= day0.getTime());
+    else if (f === "week") list = list.filter((u) => ms(u.createdAt) >= now - 7 * 86400000);
+    list.sort((a, b) => (ms(b.lastActive) - ms(a.lastActive)) || (ms(b.createdAt) - ms(a.createdAt)));
+    const rooms = c.getRooms();
+    let h = BACK + '<h3 class="title" style="margin-top:10px">' + esc(names[f] || "Users") + ' (' + list.length + ')</h3>';
+    list.slice(0, SHOW_MAX).forEach((u) => {
+      h += '<div class="card" style="margin:10px 0"><b>' + esc(u.name || "-") + '</b> ' +
+        (u.emailVerified === true ? tag("Email verified", "ok") : tag("Email not verified", "bad")) +
+        '<p class="mini">Email: ' + esc(u.email || "-") + '</p>' +
+        '<p class="mini">Phone: ' + esc(u.phone ? ("+" + (u.phoneCc || "") + " " + u.phone) : "-") + '</p>' +
+        '<p class="mini">Rooms: ' + rooms.filter((r) => r.uid === u.id).length + '</p>' +
+        '<p class="mini">Joined: ' + esc(fts(u.createdAt) || "-") + '</p>' +
+        '<p class="mini">Last active: ' + esc(fts(u.lastActive) || "-") + '</p>' +
+        '<p class="mini">User ID: ' + esc(u.id) + '</p></div>';
+    });
+    body().innerHTML = h + (list.length ? '' : '<div class="empty">Nobody here.</div>');
+  }
+
+  async function drillEvents(f) {
+    const type = f.indexOf("login") === 0 ? "login" : "logout";
+    const only24 = f.slice(-2) === "24";
+    const snap = await getDocs(query(collection(db, "events"), orderBy("createdAt", "desc"), limit(500)));
+    const cut = only24 ? Date.now() - 86400000 : 0;
+    const ev = snap.docs.map((d) => d.data())
+      .filter((e) => (e.type === "login" || e.type === "logout") && ms(e.createdAt) >= cut);
+    const by = {};
+    ev.forEach((e) => { (by[e.uid] = by[e.uid] || []).push(e); });
+    const num = (id) => by[id].filter((e) => e.type === type).length;
+    const uids = Object.keys(by).sort((a, b) => num(b) - num(a));
+    await Promise.all(uids.map((id) => getUser(id)));
+    let h = BACK + '<h3 class="title" style="margin-top:10px">' + (type === "login" ? "Logins" : "Logouts") +
+      (only24 ? " (last 24 hours)" : "") + ' by user</h3>' +
+      '<p class="mini">Built from the latest 500 login and logout events.</p>';
+    uids.forEach((id) => {
+      const u = uc[id];
+      const list = by[id];
+      const nIn = list.filter((e) => e.type === "login").length;
+      const nOut = list.length - nIn;
+      let lines = "";
+      list.slice(0, 8).forEach((e) => {
+        lines += '<p class="mini" style="margin:2px 0">' + (e.type === "login" ? "🟢 Login" : "🔴 Logout") + ' · ' + esc(fts(e.createdAt)) + '</p>';
+      });
+      h += '<div class="card" style="margin:10px 0"><b>' + esc(u ? (u.name || "-") : "(profile not found)") + '</b>' +
+        '<p class="mini">' + esc(u && u.email ? u.email : id) + '</p>' +
+        '<p>Logins: <b>' + nIn + '</b> · Logouts: <b>' + nOut + '</b></p>' + lines + '</div>';
+    });
+    body().innerHTML = h + (uids.length ? '' : '<div class="empty">No events here.</div>');
+  }
+
+  async function drillReviews() {
+    const snap = await getDocs(query(collection(db, "reviews"), orderBy("createdAt", "desc"), limit(100)));
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    await Promise.all(list.map((x) => getUser(x.ownerId)));
+    let h = BACK + '<h3 class="title" style="margin-top:10px">Owner reviews (' + list.length + ')</h3>';
+    list.forEach((x) => {
+      const o = uc[x.ownerId];
+      h += '<div class="card" style="margin:10px 0"><p><b>' + esc(String(x.rating || "")) + ' / 5</b> from ' + esc(x.name || "-") + '</p>' +
+        '<p class="mini">For owner: ' + esc(o ? (o.name || "-") : x.ownerId) + '</p>' +
+        (x.comment ? '<p>' + esc(x.comment) + '</p>' : '') +
+        '<p class="mini">' + esc(fts(x.createdAt)) + '</p></div>';
+    });
+    body().innerHTML = h + (list.length ? '' : '<div class="empty">No reviews yet.</div>');
+  }
+
+  async function drillContacts() {
+    const snap = await getDocs(query(collection(db, "contacts"), orderBy("createdAt", "desc"), limit(100)));
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    await Promise.all(list.map(async (x) => { await getUser(x.uid); await getUser(x.ownerId); await getRoom(x.roomId); }));
+    let h = BACK + '<h3 class="title" style="margin-top:10px">Contact taps (' + list.length + ')</h3>';
+    list.forEach((x) => {
+      const who = uc[x.uid];
+      const owner = uc[x.ownerId];
+      const room = rc[x.roomId];
+      h += '<div class="card" style="margin:10px 0"><p><b>' + esc(who ? (who.name || "-") : x.uid) + '</b> contacted</p>' +
+        '<p>Room: ' + esc(room ? (room.title || "-") : "(room deleted)") + '</p>' +
+        '<p class="mini">Owner: ' + esc(owner ? (owner.name || "-") : x.ownerId) + '</p>' +
+        '<p class="mini">' + esc(who && who.email ? who.email : "") + '</p>' +
+        '<p class="mini">' + esc(fts(x.createdAt)) + '</p></div>';
+    });
+    body().innerHTML = h + (list.length ? '' : '<div class="empty">No contact taps yet.</div>');
+  }
+
+  /* ---------- ROOM MANAGEMENT (v2: new element names, so they do not clash with Roommates) ---------- */
+  function roomMatches2(r, f) {
+    if (f === "attention") { const a = apOf(r); return a === "pending" || a === "needs_review" || a === "none"; }
+    return roomMatchesFilter(r, f);
+  }
+
+  async function roomsTab2() {
+    body().innerHTML = '<select id="admRoomFilter">' +
+      '<option value="attention">Needs attention (pending, review, old)</option>' +
+      '<option value="pending">Pending</option><option value="needs_review">Needs review</option>' +
+      '<option value="approved">Approved</option><option value="rejected">Rejected</option>' +
+      '<option value="hidden">Hidden by admin</option><option value="reported">Reported (1+)</option>' +
+      '<option value="none">Old rooms (no status)</option><option value="all">All rooms</option></select>' +
+      '<input id="admRoomSearch" placeholder="Search title, area, owner name, email or ID">' +
+      '<p id="admRoomSummary" class="mini"></p><div id="admRoomList"></div>';
+    $("admRoomFilter").value = rFilter;
+    $("admRoomSearch").value = rQuery;
+    $("admRoomFilter").addEventListener("change", () => { rFilter = $("admRoomFilter").value; renderRooms2(); });
+    $("admRoomSearch").addEventListener("input", () => { rQuery = $("admRoomSearch").value.trim().toLowerCase(); renderRooms2(); });
+    await renderRooms2();
+  }
+
+  async function renderRooms2() {
+    const box = $("admRoomList");
+    if (!box) return;
+    const token = ++rmToken;
+    const all = c.getRooms();
+    const sorted = all.slice().sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
+    let list = sorted.filter((r) => roomMatches2(r, rFilter));
+    if (rQuery) {
+      await Promise.all(list.map((r) => getUser(r.uid)));
+      if (token !== rmToken) return;
+      list = list.filter((r) => {
+        const o = uc[r.uid];
+        const text = [r.title, r.area, r.id, r.uid, o && o.name, o && o.email].join(" ").toLowerCase();
+        return text.indexOf(rQuery) !== -1;
+      });
+    }
+    const shown = list.slice(0, SHOW_MAX);
+    await Promise.all(shown.map((r) => getUser(r.uid)));
+    if (token !== rmToken || !$("admRoomList")) return;
+    const sm = $("admRoomSummary");
+    if (sm) sm.textContent = list.length + " rooms found" + (list.length > SHOW_MAX ? " (showing first " + SHOW_MAX + ")" : "") + " · " + all.length + " total loaded";
+    let html = "";
+    shown.forEach((r) => { html += roomCard2(r, uc[r.uid]); });
+    $("admRoomList").innerHTML = html || '<div class="empty">No rooms here.</div>';
+  }
   /* ---------- TABS AND CLICKS ---------- */
   async function load() {
     if (!c.isAdmin()) return;
     $("adminTab").value = current;
     try {
-      if (current === "overview") { body().innerHTML = '<div class="empty">Loading...</div>'; await overview(); }
+      if (current === "overview") { body().innerHTML = '<div class="empty">Loading...</div>'; await overview2(); }
       else if (current === "reports") await reportsTab();
       else if (current === "rooms") await roomsTab();
       else if (current === "users") await usersTab();
-      else if (current === "roommates") await roommatesTab();
+      else if (current === "roommates") await roommatesTab2();
       else if (current === "approval") approvalTab();
       else if (current === "security") await securityTab();
       else if (current === "profile") profileTab();
@@ -859,6 +1201,10 @@ export function initAdmin(c) {
         if (t === "rooms") rFilter = g("data-filter") || "pending";
         if (t === "reports") rpFilter = g("data-filter") || "new";
         await setTab(t);
+      } else if (a === "drill") {
+        await drill(g("data-k"));
+      } else if (a === "back") {
+        await load();
       } else if (a === "raction") {
         const ok = await roomAction(g("data-rid"), g("data-act"), g("data-id"));
         if (ok) await load();
@@ -915,11 +1261,13 @@ export function initAdmin(c) {
 
   body().addEventListener("click", onClick);
 
-  return {
+    return {
     load,
+    open() { return setTab("overview"); },
     onRooms() {
-      if (current === "rooms" && $("rmList")) renderRooms();
+      if (current === "rooms" && $("admRoomList")) renderRooms2();
       else if (current === "approval" && $("adminBody")) approvalTab();
+      else if (current === "overview" && $("attBox")) renderAttention();
     }
   };
 }
