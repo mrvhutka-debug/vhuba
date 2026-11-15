@@ -114,3 +114,34 @@ button.row.danger{color:var(--bad)}
 /* ---------- NEW: calculator result ---------- */
 .result{background:var(--tagbg);color:var(--tagtext);padding:12px;border-radius:10px;font-size:18px;font-weight:bold;margin:8px 0}
 .result small{display:block;font-weight:normal;font-size:14px;margin-top:4px}
+/* ================= v3: new features ================= */
+
+/* quick chips on the Find page */
+.chips{display:flex;flex-wrap:wrap;margin:0 0 6px 0}
+button.chip{width:auto;margin:0 6px 6px 0;padding:8px 14px;border-radius:20px;background:var(--card);color:var(--text);border:1px solid var(--border);font-weight:normal;font-size:14px}
+button.chip.on{background:var(--brand);color:#fff;border-color:var(--brand)}
+
+/* suggested rooms */
+.sugtitle{margin:12px 12px 0 12px;font-size:18px}
+.sugcard{display:flex;gap:10px;align-items:center;background:var(--card);margin:12px;padding:10px;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.2);cursor:pointer}
+.sugimg{width:84px;height:84px;border-radius:8px;object-fit:cover;flex-shrink:0;background:var(--soft);display:flex;align-items:center;justify-content:center;font-size:30px}
+div.sugimg:empty::after{content:"\1F3E0"}
+.sugtxt{min-width:0;flex:1}
+.sugtxt b{display:block;margin-bottom:4px;overflow-wrap:anywhere}
+.sugtxt .price{margin-top:2px}
+
+/* "expires soon" reminder inside My rooms */
+.expwarn{background:#fef3c7;color:#92400e;padding:8px 10px;border-radius:8px;margin:8px 0;font-size:14px}
+:root[data-theme="dark"] .expwarn{background:#422006;color:#fde68a}
+
+/* welcome guide (first visit) */
+.tourlist p{margin:8px 0;line-height:1.45}
+
+/* message to owner */
+.cnt{text-align:right;color:var(--muted);font-size:13px;margin:-6px 0 8px 0}
+.msgitem{border-left:4px solid var(--border)}
+.msgitem.unread{border-left-color:var(--ok)}
+
+/* WhatsApp phone check box (profile page) */
+.wabox{background:var(--card);border-radius:10px;padding:12px;margin:12px 0;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+.wabox p{margin:6px 0}

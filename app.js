@@ -12,40 +12,29 @@ import X from "./x.js";
 import Y from "./x2.js";
 import Z from "./x3.js";
 import W from "./x4.js";
+import V from "./x5.js";
+import Q from "./x6.js";
 import { initSettings } from "./settings.js";
 import { initAdmin } from "./admin.js";
 
-/* Vhuba support contact. Fill these two lines with your own details.
-   SUPPORT_WA: country code + number, no plus or spaces, e.g. "9779812345678"
-   SUPPORT_EMAIL: your support email. Leave "" to hide a button. */
+/* SUPPORT_WA: YOUR WhatsApp number for the free phone check. Country code + number, no plus, no spaces.
+   Example: "9779812345678". Keep "" until you write it.
+   SUPPORT_EMAIL: your support email. Keep "" to hide the button. */
 const SUPPORT_WA = "";
 const SUPPORT_EMAIL = "";
-
-/* Set this to true only when SMS verification really works (Firebase billing is on).
-   Then an owner must verify the phone before adding a room. With false, owners can still
-   add rooms, but those rooms stay Pending until an admin approves them. */
 const REQUIRE_PHONE_FOR_OWNERS = false;
-
-/* NEW: SMS phone verification needs Firebase billing. While it is false, all phone-verify
-   buttons and messages are hidden. Set it to true when billing is on. */
+/* true only when Firebase billing and SMS verification are on */
 const SHOW_PHONE_VERIFY = false;
 
-/* NEW: small extra texts that are not in the translation files */
-const P = {
-  en: { verifyToPost: "To post as a roommate, please verify your email first. You do not need this for searching rooms or calling owners." },
-  hi: { verifyToPost: "रूममेट पोस्ट बनाने के लिए पहले अपना ईमेल सत्यापित करें। कमरे खोजने या मालिकों को कॉल करने के लिए इसकी ज़रूरत नहीं है।" },
-  ne: { verifyToPost: "रुममेट पोस्ट बनाउन पहिले आफ्नो इमेल प्रमाणित गर्नुहोस्। कोठा खोज्न वा मालिकलाई फोन गर्न यो आवश्यक छैन।" }
-};
-
 const T = {
-  en: Object.assign({}, en, X.en, Y.en, Z.en, W.en, P.en),
-  hi: Object.assign({}, hi, X.hi, Y.hi, Z.hi, W.hi, P.hi),
-  ne: Object.assign({}, ne, X.ne, Y.ne, Z.ne, W.ne, P.ne)
+  en: Object.assign({}, en, X.en, Y.en, Z.en, W.en, V.en, Q.en),
+  hi: Object.assign({}, hi, X.hi, Y.hi, Z.hi, W.hi, V.hi, Q.hi),
+  ne: Object.assign({}, ne, X.ne, Y.ne, Z.ne, W.ne, V.ne, Q.ne)
 };
 
 const TITLE_KEY = {
-  home: "navHome", find: "navFind", favs: "navFavs", notices: "navNotices",
-  mine: "navMine", settings: "navSettings", admin: "navAdmin", profile: "navProfile", owner: "navOwner",
+  home: "navHome", find: "navFind", favs: "navFavs", notices: "navNotices", mine: "navMine",
+  settings: "navSettings", admin: "navAdmin", profile: "navProfile", owner: "navOwner",
   room: "navRoom", map: "navMap", roommates: "navRoommates", tools: "navTools"
 };
 const VIEWS = ["home", "find", "favs", "notices", "mine", "settings", "admin", "profile", "owner", "room", "map", "roommates", "tools"];
@@ -61,7 +50,6 @@ const DEPOSITS = { IN: [5000, 10000], NP: [8000, 16000] };
 const EMPTY_F = { q: "", type: "", loc: "", country: "", budget: "", dep: "", ex: "", own: "", fw: "", am: "", sort: "new" };
 const PHOTO_OK = /^data:image\/jpeg;base64,[A-Za-z0-9+\/=]+$/;
 
-/* NEW: facilities, house rules, who the room is for */
 const AMEN = ["wifi", "ac", "geyser", "bath", "parking", "furnished", "water", "backup", "kitchen"];
 const AMEN_KEY = {
   wifi: "amWifi", ac: "amAc", geyser: "amGeyser", bath: "amBath", parking: "amParking",
@@ -70,6 +58,12 @@ const AMEN_KEY = {
 const RULE_KEY = { vegOnly: "ruVeg", noSmoking: "ruNoSmoke", petsOk: "ruPets" };
 const FW_KEY = { any: "fwAny", boys: "fwBoys", girls: "fwGirls", family: "fwFamily" };
 const FWF_KEY = { boys: "fwfBoys", girls: "fwfGirls", family: "fwfFamily" };
+const CITIES = {
+  IN: ["Delhi", "Mumbai", "Bengaluru", "Hyderabad", "Chennai", "Kolkata", "Pune", "Ahmedabad", "Jaipur", "Lucknow",
+    "Chandigarh", "Dehradun", "Noida", "Gurugram", "Indore", "Bhopal", "Patna", "Kanpur", "Varanasi", "Ranchi"],
+  NP: ["Kathmandu", "Lalitpur", "Bhaktapur", "Pokhara", "Biratnagar", "Birgunj", "Butwal", "Bharatpur", "Dharan",
+    "Nepalgunj", "Hetauda", "Janakpur", "Itahari", "Dhangadhi"]
+};
 
 let lang = "en";
 let tab = "login";
@@ -85,11 +79,14 @@ let roomsData = [];
 let pubMap = new Map();
 let mineMap = new Map();
 let notices = [];
+let msgs = [];
 let unsubRooms = null;
 let unsubVer = null;
 let unsubNotices = null;
+let unsubMsgs = null;
 let hbTimer = null;
 let verifiedSet = new Set();
+let waSet = new Set();
 let reportingId = null;
 let editingId = null;
 let listLimit = PAGE;
@@ -97,9 +94,12 @@ let lastFk = "";
 let seenBefore = Date.now();
 let ssAutoDone = false;
 let pendingPhotos = [];
+let edPhotosNew = [];
 let pendingLoc = null;
 let myPos = null;
 let myPub = null;
+let myWa = null;
+let myCheck = null;
 let pubCache = {};
 let pubReq = new Set();
 let pfPhoto = "";
@@ -108,8 +108,6 @@ let recaptcha = null;
 let ownerUid = "";
 let ownerBack = "home";
 let renderTimer = null;
-
-/* NEW state */
 let roomCache = {};
 let viewRoomId = null;
 let roomBack = "home";
@@ -122,6 +120,7 @@ let rmData = [];
 let rmLoaded = false;
 let rmFormOpen = false;
 let filtersOpen = false;
+let msgRoomId = null;
 let pendingRoom = "";
 try {
   const pr = new URLSearchParams(location.search).get("room");
@@ -155,7 +154,7 @@ function phoneVerifiedNow() {
   return !!(auth.currentUser && auth.currentUser.phoneNumber);
 }
 
-/* ---------- CURRENCY (decided by the ROOM's country, never by the viewer) ---------- */
+/* currency is decided by the ROOM's country, never by the viewer */
 function roomCountry(r) {
   if (r.country === "IN" || r.country === "NP") return r.country;
   return digits(r.cc) === "977" ? "NP" : "IN";
@@ -203,7 +202,7 @@ function showView(v) {
   $("pageTitle").textContent = T[lang][TITLE_KEY[v]];
   closeMenu();
   if (v === "admin") admin.open();
-  if (v === "notices") { renderNotices(); markNoticesRead(); }
+  if (v === "notices") { renderNotices(); renderMessages(); markNoticesRead(); markMsgsRead(); }
   if (v === "profile") renderProfile();
   if (v === "mine") { updateNudge(); loadContactCounts(); }
   if (v === "map") renderMap();
@@ -239,7 +238,7 @@ function authError(code) {
   return map[code] || "Something went wrong. Please try again.";
 }
 
-/* ---------- ANALYTICS HELPERS (events and activity) ---------- */
+/* ---------- activity records, heartbeat ---------- */
 async function logEvent(type, roomId) {
   try {
     if (!auth.currentUser) return;
@@ -264,8 +263,7 @@ function stopHeartbeat() {
   if (hbTimer) { clearInterval(hbTimer); hbTimer = null; }
 }
 
-/* Keep the account email, its verified status and the phone verified status on the user's profile,
-   so admins can see them. The rules only accept values that match the real login. */
+/* keep email, email-verified and phone-verified on the profile so admins can see them */
 async function syncAuthFields() {
   const u = auth.currentUser;
   if (!u || !profile) return;
@@ -282,6 +280,7 @@ async function syncAuthFields() {
   } catch (e) {}
 }
 
+/* the menu entry only; the real protection is in the Firestore rules */
 async function checkAdmin() {
   try {
     await getDocs(query(collection(db, "reports"), limit(1)));
@@ -291,7 +290,6 @@ async function checkAdmin() {
   }
 }
 
-/* A blocked account is told so and logged out (see route). Only the admin can block. */
 async function checkBlocked() {
   isBlocked = false;
   try {
@@ -300,7 +298,7 @@ async function checkBlocked() {
   } catch (e) {}
 }
 
-/* ---------- PUBLIC PROFILE (the only part other people can see) ---------- */
+/* ---------- public profile ---------- */
 async function loadMyPub() {
   myPub = null;
   try {
@@ -342,10 +340,20 @@ async function syncPublicBadges() {
   try { await writePublic({}); } catch (e) {}
 }
 
+/* my WhatsApp phone check (the request I made, and the number the admin accepted) */
+async function loadWa() {
+  myWa = null;
+  myCheck = null;
+  const uid = auth.currentUser.uid;
+  try { const s = await getDoc(doc(db, "waPhone", uid)); myWa = s.exists() ? s.data() : null; } catch (e) {}
+  try { const s = await getDoc(doc(db, "phoneChecks", uid)); myCheck = s.exists() ? s.data() : null; } catch (e) {}
+}
+
 async function prepareSession() {
   await syncAuthFields();
   await loadMyPub();
   await syncPublicBadges();
+  await loadWa();
   await checkAdmin();
   await checkBlocked();
 }
@@ -363,7 +371,6 @@ function setTab(t) {
   $("aMsg").textContent = "";
 }
 
-/* Email and password. Customers are not asked to verify their email here. */
 async function doAuth() {
   const name = $("aName").value.trim();
   const phone = $("aPhone").value.trim();
@@ -408,7 +415,6 @@ async function doAuth() {
   $("aBtn").disabled = false;
 }
 
-/* Forgot password: sends a reset link to the email typed above. */
 async function doForgot() {
   const msg = $("aMsg");
   msg.textContent = "";
@@ -424,7 +430,7 @@ async function doForgot() {
   $("aForgot").disabled = false;
 }
 
-/* Continue with Google. The pop-up must open straight from the tap, so nothing async comes before it. */
+/* the Google pop-up must open straight from the tap, so nothing async comes before it */
 async function doGoogle() {
   const msg = $("aMsg");
   msg.textContent = "";
@@ -468,6 +474,8 @@ async function doLogout() {
   stopRooms();
   profile = null;
   myPub = null;
+  myWa = null;
+  myCheck = null;
   isAdmin = false;
   isBlocked = false;
   ssAutoDone = false;
@@ -483,22 +491,24 @@ async function doLogout() {
   rmFormOpen = false;
   viewRoomId = null;
   filtersOpen = false;
+  msgs = [];
   $("fBox").classList.remove("open");
+  $("tourModal").classList.remove("open");
   if (recaptcha) { try { recaptcha.clear(); } catch (e) {} recaptcha = null; }
   closeReport();
   closeEdit();
   closeBig();
+  closeMsg();
   showView("home");
   document.querySelectorAll(".sub").forEach((s) => s.classList.remove("open"));
   await signOut(auth);
 }
-
-/* ---------- EMAIL VERIFY (needed to rent out a room, report a room, write a review or post as a roommate) ---------- */
+/* ---------- EMAIL VERIFY (needed for rooms, reports, reviews, messages, roommate posts, phone check) ---------- */
 function needVerify(kind) {
   const u = auth.currentUser;
   if (!u || u.emailVerified) return false;
-  afterVerify = (kind === "rent") ? "mine" : (kind === "post") ? "roommates" : "";
-  const keys = { rent: "verifyToRent", review: "verifyToReview", post: "verifyToPost" };
+  afterVerify = (kind === "rent") ? "mine" : (kind === "post") ? "roommates" : (kind === "wa") ? "profile" : "";
+  const keys = { rent: "verifyToRent", review: "verifyToReview", post: "verifyToPost", msg: "verifyToMsg", wa: "verifyToWa" };
   $("verifyEmail").textContent = u.email || "";
   $("vWhy").textContent = T[lang][keys[kind] || "verifyToReport"];
   $("vMsg").textContent = "";
@@ -527,6 +537,8 @@ async function checkVerified() {
         else showView("mine");
       } else if (to === "roommates") {
         showView("roommates");
+      } else if (to === "profile") {
+        showView("profile");
       }
     } else {
       $("vMsg").textContent = "Not verified yet. Open the link in the email first, then press this button again.";
@@ -550,6 +562,7 @@ async function resendVerify() {
   }
   setTimeout(() => { resendBusy = false; $("vResend").disabled = false; }, 60000);
 }
+
 /* ---------- LANGUAGE AND HIDE-PHONE (used by Settings and Profile) ---------- */
 async function changeLang(l) {
   lang = l;
@@ -560,7 +573,7 @@ async function changeLang(l) {
   applyLang();
 }
 
-/* Update the phone shown on all my rooms (hidden means empty). Returns false if the rules refuse. */
+/* update the phone shown on all my rooms (hidden means empty). Returns false if the rules refuse. */
 async function syncRoomsPhone(hide) {
   try {
     const h = (hide === undefined) ? !!profile.hidePhone : hide;
@@ -640,7 +653,9 @@ function route() {
   show("appScreen");
   startRooms();
   startHeartbeat();
-  /* NEW: someone opened a shared room link (?room=ID) */
+  /* first visit: show the short welcome guide once */
+  if (profile.tourDone !== true) $("tourModal").classList.add("open");
+  /* someone opened a shared room link (?room=ID) */
   if (pendingRoom) {
     const rid = pendingRoom;
     pendingRoom = "";
@@ -721,7 +736,7 @@ function setupSupport(t) {
     : '';
 }
 
-/* Price filter options are built per country, so rupees and NPR are never mixed. */
+/* price filter options are built per country, so rupees and NPR are never mixed */
 function buildPriceFilters() {
   const t = T[lang];
   const c = $("countryFilter").value;
@@ -764,7 +779,14 @@ function updateCurrencyUI() {
   $("deposit").placeholder = t.depositPh2.replace("{cur}", cur);
 }
 
-/* The "verify my phone" box is shown only when SHOW_PHONE_VERIFY is true (needs Firebase billing). */
+/* suggestions for the City box of the Add room form (the person can still type any city) */
+function buildCityList() {
+  const c = $("country").value;
+  const list = c ? CITIES[c] : CITIES.IN.concat(CITIES.NP);
+  $("cityList").innerHTML = list.map((x) => '<option value="' + esc(x) + '"></option>').join("");
+}
+
+/* the "verify my phone" box is shown only when SHOW_PHONE_VERIFY is true (needs Firebase billing) */
 function updateNudge() {
   const t = T[lang];
   $("nudgeText").textContent = t.nudgeText;
@@ -787,6 +809,7 @@ function applyLang() {
   $("myUidText").textContent = auth.currentUser ? (t.myId + ": " + auth.currentUser.uid) : "";
   $("locInfo").textContent = pendingLoc ? t.locGot : "";
   buildPriceFilters();
+  buildCityList();
   updateCurrencyUI();
   updateRmCurrency();
   updateNudge();
@@ -794,6 +817,7 @@ function applyLang() {
   updateNoticeBadge();
   if (currentView === "profile") renderProfileDyn();
   if (currentView === "roommates") renderRoommates();
+  if (currentView === "notices") { renderNotices(); renderMessages(); }
   render();
 }
 
@@ -817,12 +841,12 @@ function isLive(r) {
 }
 function hasLoc(r) { return typeof r.lat === "number" && typeof r.lng === "number"; }
 
-/* NEW: find a room in the loaded list, or in the rooms opened from a link */
+/* find a room in the loaded list, or in the rooms opened from a link */
 function findRoom(id) {
   return roomsData.find((x) => x.id === id) || roomCache[id] || null;
 }
 
-/* NEW: show a date typed as YYYY-MM-DD in the phone's own date style */
+/* show a date typed as YYYY-MM-DD in the phone's own date style */
 function fmtDay(s) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ""));
   if (!m) return "";
@@ -960,7 +984,7 @@ function readFilters() {
   };
 }
 
-/* Old saved searches had no country and used rupees, so they mean India. */
+/* old saved searches had no country and used rupees, so they mean India */
 function normSaved(f) {
   const g = Object.assign({}, EMPTY_F, f || {});
   if (!g.country && (g.budget || g.dep)) g.country = "IN";
@@ -969,7 +993,9 @@ function normSaved(f) {
 
 function matches(r, f) {
   if (f.q) {
-    const text = ((r.title || "") + " " + (r.area || "") + " " + (r.city || "")).toLowerCase();
+    /* the search also understands room types (single, shared, 1 bhk) and who the room is for */
+    const text = ((r.title || "") + " " + (r.area || "") + " " + (r.city || "") + " " + (r.type || "") + " " +
+      (T[lang][r.type] || "") + " " + (T.en[r.type] || "") + " " + (r.forWho || "")).toLowerCase();
     if (text.indexOf(f.q) === -1) return false;
   }
   if (f.type && r.type !== f.type) return false;
@@ -983,7 +1009,7 @@ function matches(r, f) {
   }
   if (f.ex === "incl" && r.extras !== "exIncl") return false;
   if (f.own === "owner" && r.ownerType !== "owner") return false;
-  /* NEW: rooms for "anyone" (or old rooms with no choice) fit every group */
+  /* rooms for "anyone" (or old rooms with no choice) fit every group */
   if (f.fw && r.forWho && r.forWho !== "any" && r.forWho !== f.fw) return false;
   if (f.am && !(Array.isArray(r.amenities) && r.amenities.indexOf(f.am) !== -1)) return false;
   return true;
@@ -1078,11 +1104,57 @@ async function onSortChange() {
   render();
 }
 
-/* NEW: the Filters button opens and closes the filter box */
+/* the Filters button opens and closes the filter box */
 function toggleFilters() {
   filtersOpen = !filtersOpen;
   $("fBox").classList.toggle("open", filtersOpen);
   $("fToggle").textContent = filtersOpen ? T[lang].filtersHide : T[lang].filtersBtn;
+}
+
+/* ---------- QUICK CHIPS AND SUGGESTED ROOMS ---------- */
+function syncChips(f) {
+  document.querySelectorAll("[data-qt]").forEach((b) => b.classList.toggle("on", b.getAttribute("data-qt") === f.type));
+  document.querySelectorAll("[data-qf]").forEach((b) => b.classList.toggle("on", b.getAttribute("data-qf") === f.fw));
+}
+
+function sugCard(r, t) {
+  const cur = CUR[roomCountry(r)];
+  const ph = (Array.isArray(r.photos) && typeof r.photos[0] === "string" && PHOTO_OK.test(r.photos[0]))
+    ? '<img class="sugimg" src="' + r.photos[0] + '" alt="">' : '<div class="sugimg"></div>';
+  const fw = (r.forWho && r.forWho !== "any" && FW_KEY[r.forWho])
+    ? '<span class="tag">' + esc(t[FW_KEY[r.forWho]]) + '</span>' : '';
+  return '<div class="sugcard" data-open="' + esc(r.id) + '">' + ph + '<div class="sugtxt"><b>' + esc(r.title || "") + '</b>' +
+    '<div><span class="tag">' + esc(t[r.type] || "") + '</span>' + fw + '</div>' +
+    '<div class="price">' + esc(money(r.price, cur)) + ' ' + esc(t.perMonth) + '</div>' +
+    '<div class="mini">' + esc(r.area || "") + (r.city ? ', ' + esc(r.city) : '') + '</div></div></div>';
+}
+
+/* shows 4 or 5 different rooms (one of each type if they exist) when nothing is chosen or typed */
+function renderSuggest(found, f, myUid) {
+  const box = $("sugBox");
+  if (!box) return;
+  syncChips(f);
+  const plain = !f.q && !f.type && !f.loc && !f.country && !f.budget && !f.dep && !f.ex && !f.own && !f.fw && !f.am;
+  if (!plain || !found.length) { box.innerHTML = ""; return; }
+  const t = T[lang];
+  const pool = found.filter((r) => r.uid !== myUid);
+  const src = pool.length ? pool : found;
+  const picked = [];
+  const take = (fn) => {
+    const r = src.find((x) => picked.indexOf(x) === -1 && fn(x));
+    if (r) picked.push(r);
+  };
+  take((r) => r.type === "single");
+  take((r) => r.type === "shared");
+  take((r) => r.type === "bhk");
+  take((r) => r.forWho === "family");
+  take((r) => r.forWho === "girls");
+  take((r) => r.forWho === "boys");
+  src.forEach((r) => { if (picked.length < 5 && picked.indexOf(r) === -1) picked.push(r); });
+  let h = '<h3 class="title" style="margin:12px 12px 6px 12px">' + esc(t.sugTitle) + '</h3>';
+  picked.slice(0, 5).forEach((r) => { h += sugCard(r, t); });
+  h += '<h3 class="title" style="margin:16px 12px 0 12px">' + esc(t.sugAll) + '</h3>';
+  box.innerHTML = h;
 }
 
 /* ---------- FAVOURITES ---------- */
@@ -1103,11 +1175,16 @@ async function toggleFav(id) {
   }
 }
 
-/* ---------- NOTIFICATIONS (messages from admin about your rooms) ---------- */
+/* ---------- NOTIFICATIONS AND MESSAGES ---------- */
 const nms = (n) => (n.createdAt && n.createdAt.toMillis) ? n.createdAt.toMillis() : 0;
+const MSG_DEL = {
+  en: "Delete this message?",
+  hi: "क्या यह संदेश हटाना है?",
+  ne: "के यो सन्देश हटाउने?"
+};
 
 function updateNoticeBadge() {
-  const n = notices.filter((x) => !x.read).length;
+  const n = notices.filter((x) => !x.read).length + msgs.filter((x) => !x.read).length;
   $("mNotices").textContent = T[lang].navNotices + (n ? " (" + n + ")" : "");
 }
 
@@ -1121,7 +1198,34 @@ function renderNotices() {
       (n.reason ? '<p>' + esc(t.reasonLabel) + ': ' + esc(n.reason) + '</p>' : '') +
       '<p class="mini">' + esc(n.createdAt && n.createdAt.toDate ? n.createdAt.toDate().toLocaleString() : "") + '</p></div>';
   });
-  $("noticeList").innerHTML = h || '<div class="empty">' + esc(t.noNotices) + '</div>';
+  $("noticeList").innerHTML = h || (msgs.length ? '' : '<div class="empty">' + esc(t.noNotices) + '</div>');
+}
+
+/* messages sent to me by people interested in my rooms (phone hidden rooms) */
+function renderMessages() {
+  const t = T[lang];
+  const box = $("msgBox");
+  if (!box) return;
+  if (!msgs.length) { box.innerHTML = ""; return; }
+  const list = msgs.slice().sort((a, b) => nms(b) - nms(a));
+  let h = '<h3 class="title">' + esc(t.msgInbox) + '</h3>';
+  list.forEach((m) => {
+    const room = findRoom(m.roomId);
+    const title = room ? (room.title || "") : "";
+    const num = digits(m.phone);
+    const cc = digits(m.cc) || "91";
+    const reply = encodeURIComponent(t.msgReply.replace("{name}", m.name || "").replace("{title}", title));
+    const when = (m.createdAt && m.createdAt.toDate) ? m.createdAt.toDate().toLocaleString() : "";
+    h += '<div class="card msgitem' + (m.read ? '' : ' unread') + '" style="margin:12px 0">' +
+      '<p><b>' + esc(m.name || "") + '</b></p>' +
+      '<p class="mini">' + esc(t.msgAbout.replace("{title}", title)) + '</p>' +
+      '<p style="white-space:pre-wrap">' + esc(m.text || "") + '</p>' +
+      (num ? '<a class="call" href="tel:' + esc(num) + '">' + esc(t.call) + '</a>' +
+        '<a class="call wa" href="https://wa.me/' + esc(cc + num) + '?text=' + reply + '" target="_blank" rel="noopener">WhatsApp</a>' : '') +
+      '<p class="mini">' + esc(when) + '</p>' +
+      '<button class="del" type="button" data-mdel="' + esc(m.id) + '">🗑</button></div>';
+  });
+  box.innerHTML = h;
 }
 
 async function markNoticesRead() {
@@ -1134,13 +1238,34 @@ async function markNoticesRead() {
   } catch (e) {}
 }
 
-/* ---------- ROOMS ---------- */
+async function markMsgsRead() {
+  const un = msgs.filter((m) => !m.read);
+  if (!un.length) return;
+  try {
+    const b = writeBatch(db);
+    un.forEach((m) => b.update(doc(db, "messages", m.id), { read: true }));
+    await b.commit();
+  } catch (e) {}
+}
+
+async function msgBoxClick(e) {
+  const id = e.target && e.target.getAttribute ? e.target.getAttribute("data-mdel") : "";
+  if (!id) return;
+  if (!confirm(MSG_DEL[lang] || MSG_DEL.en)) return;
+  try {
+    await deleteDoc(doc(db, "messages", id));
+  } catch (err) {
+    alert(T[lang].errGeneric);
+  }
+}
+
+/* ---------- ROOMS (live list) ---------- */
 function schedRender() {
   clearTimeout(renderTimer);
   renderTimer = setTimeout(render, 150);
 }
 
-/* Fetch the public profile of the owners shown on screen (only new ones, at most 30 at a time). */
+/* fetch the public profile of the owners shown on screen (only new ones, at most 30 at a time) */
 function prefetchOwners(list) {
   const need = [];
   list.forEach((r) => {
@@ -1199,16 +1324,24 @@ function startRooms() {
     updateNoticeBadge();
     if (currentView === "notices") renderNotices();
   }, function () {});
+
+  unsubMsgs = onSnapshot(query(collection(db, "messages"), where("ownerId", "==", uid), limit(50)), (snap) => {
+    msgs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    updateNoticeBadge();
+    if (currentView === "notices") renderMessages();
+  }, function () {});
 }
 
 function stopRooms() {
   if (unsubRooms) { unsubRooms(); unsubRooms = null; }
   if (unsubVer) { unsubVer(); unsubVer = null; }
   if (unsubNotices) { unsubNotices(); unsubNotices = null; }
+  if (unsubMsgs) { unsubMsgs(); unsubMsgs = null; }
   verifiedSet = new Set();
   pubMap = new Map();
   mineMap = new Map();
   notices = [];
+  msgs = [];
   roomsData = [];
 }
 
@@ -1251,7 +1384,6 @@ function cardTop(r, t) {
   const ctTag = '<span class="tag">' + esc(t["tag" + c]) + '</span>';
   const distTag = (myPos && hasLoc(r))
     ? '<span class="tag">' + esc(t.kmAway.replace("{n}", distKm(myPos, r).toFixed(1))) + '</span>' : '';
-  /* NEW tags: who the room is for, available-from date, facilities, house rules */
   const fwTag = (r.forWho && r.forWho !== "any" && FW_KEY[r.forWho])
     ? '<span class="tag">' + esc(t[FW_KEY[r.forWho]]) + '</span>' : '';
   const avDay = fmtDay(r.availFrom);
@@ -1281,8 +1413,15 @@ function shareBtn(r, t) {
   return '<button class="rep" data-share="' + esc(r.id) + '">' + esc(t.shareBtn) + '</button>';
 }
 
-/* Call, WhatsApp and "ask to visit". Every one of these links has data-contact, so the app can
-   show the safety reminder first (see contactClick) and count the contact for the owner. */
+/* "Message owner" shows only when the owner hides the phone number (and it is not my own room) */
+function msgBtn(r, t) {
+  const me = auth.currentUser ? auth.currentUser.uid : "";
+  if (r.uid === me) return "";
+  return '<button class="act" type="button" data-msg="' + esc(r.id) + '">' + esc(t.msgBtn) + '</button>';
+}
+
+/* Call, WhatsApp and "ask to visit": each link has data-contact, so the app shows the safety
+   reminder first (see contactClick) and counts the contact for the owner */
 function contactBtns(r, t) {
   const num = digits(r.phone);
   const cc = digits(r.cc) || "91";
@@ -1290,7 +1429,7 @@ function contactBtns(r, t) {
   const ask = (k) => encodeURIComponent(t[k].replace("{title}", r.title || ""));
   let h = "";
   if (!num) {
-    h += '<div class="phoneoff">' + esc(t.phoneHidden) + '</div>';
+    h += '<div class="phoneoff">' + esc(t.phoneHidden) + '</div>' + msgBtn(r, t);
   } else {
     h += '<a class="call" data-contact="' + rid + '" href="tel:' + esc(num) + '">' + esc(t.call) + '</a>' +
       '<a class="call wa" data-contact="' + rid + '" href="https://wa.me/' + esc(cc + num) + '?text=' + ask("waMsg") +
@@ -1305,7 +1444,7 @@ function contactBtns(r, t) {
   return h + shareBtn(r, t);
 }
 
-/* NEW: write one small record so the owner can see how many people contacted them.
+/* one small record, so the owner can see how many people contacted them (and so a review is allowed).
    If this person already contacted this room, the database refuses and we just ignore it. */
 async function recordContact(rid) {
   const r = findRoom(rid);
@@ -1317,7 +1456,7 @@ async function recordContact(rid) {
   } catch (e) {}
 }
 
-/* NEW: safety reminder before opening Call or WhatsApp */
+/* safety reminder before opening Call or WhatsApp */
 function contactClick(e) {
   const a = (e.target && e.target.closest) ? e.target.closest("a[data-contact]") : null;
   if (!a) return;
@@ -1380,6 +1519,7 @@ function render() {
       esc(t.moreBtn) + ' (' + (found.length - listLimit) + ')</button>';
   }
   $("list").innerHTML = html;
+  renderSuggest(found, f, myUid);
 
   let fhtml = "";
   const favRooms = [];
@@ -1417,6 +1557,7 @@ function render() {
     }
     let badge = "";
     let btns = "";
+    let warn = "";
     if (r.hidden) {
       badge = '<span class="tag bad">' + esc(t.stAdminHidden) + '</span>';
     } else if (isReported(r)) {
@@ -1430,13 +1571,15 @@ function render() {
     } else {
       badge = '<span class="tag ok">' + esc(t.stAvail) + '</span>' +
         '<span class="tag">' + esc(t.daysLeft.replace("{n}", String(daysLeft(r)))) + '</span>';
+      /* reminder when 5 days or less are left */
+      if (daysLeft(r) <= 5) warn = '<div class="expwarn">' + esc(t.expSoon.replace("{n}", String(daysLeft(r)))) + '</div>';
       btns += '<button class="act" data-rent="' + id + '">' + esc(t.btnRented) + '</button>' +
         '<button class="act gray" data-renew="' + id + '">' + esc(t.btnRenew) + '</button>' +
         shareBtn(r, t);
     }
     const cn = contactCounts[r.id];
     const stat = cn > 0 ? '<p class="hint" style="padding:6px 0 0">👥 ' + esc(t.statContacts.replace("{n}", String(cn))) + '</p>' : '';
-    mhtml += '<div class="card">' + cardTop(r, t) + '<div>' + badge + '</div>' + stat + btns + editB +
+    mhtml += '<div class="card">' + cardTop(r, t) + '<div>' + badge + '</div>' + warn + stat + btns + editB +
       '<button class="del" data-del="' + id + '">' + esc(t.del) + '</button></div>';
   });
   if (mcount === 0) mhtml = '<div class="empty">' + esc(t.noMine) + '</div>';
@@ -1449,7 +1592,7 @@ function render() {
   prefetchOwners(shown.concat(favRooms));
 }
 
-/* NEW: for each of my rooms, count how many different people tapped Call or WhatsApp */
+/* for each of my rooms, count how many different people tapped Call or WhatsApp */
 async function loadContactCounts() {
   if (!auth.currentUser) return;
   const uid = auth.currentUser.uid;
@@ -1497,20 +1640,30 @@ async function addRoom() {
 
   $("addBtn").disabled = true;
   try {
-    /* Every room starts as pending. It is approved automatically only if the login carries a phone
-       number verified by SMS code, that number is the one on the room (or the owner hides the number),
-       and a photo and a name exist. The database rules check all of this again. */
+    const myUid = auth.currentUser.uid;
+    const nameOk = String(profile.name || "").trim().length >= 2;
+
+    /* Every room starts as pending. It is approved by itself only in these cases:
+       1) the login has an SMS-verified phone (needs billing, off for now), or
+       2) YOU marked this owner as a Verified owner. If the owner passed the WhatsApp phone check,
+          the room must use that checked number (or hide the number).
+       The database rules check all of this again. */
     let approval = "pending";
     let approvalBy = "system";
     let mismatch = false;
     try {
       const tk = await auth.currentUser.getIdTokenResult(true);
       const tp = tk.claims.phone_number;
-      if (tp && pendingPhotos.length >= 1 && String(profile.name || "").trim().length >= 2) {
+      if (tp && pendingPhotos.length >= 1 && nameOk) {
         if (hide || tp === "+" + cc + phone) { approval = "approved"; approvalBy = "auto"; }
         else mismatch = true;
       }
     } catch (e) {}
+    if (approval === "pending" && verifiedSet.has(myUid) && pendingPhotos.length >= 1 && nameOk) {
+      const checked = myWa && myWa.phone ? String(myWa.phone) : "";
+      if (!checked || hide || checked === phone) { approval = "approved"; approvalBy = "trusted"; }
+      else mismatch = true;
+    }
 
     if (!myPub) { try { await writePublic({}); } catch (e) {} }
 
@@ -1521,14 +1674,13 @@ async function addRoom() {
       forWho: forWho, availFrom: availFrom, amenities: amenities, rules: rules,
       status: "available", reportCount: 0,
       approval: approval, approvalBy: approvalBy,
-      uid: auth.currentUser.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+      uid: myUid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
     };
     if (approval === "approved") data.approvalAt = serverTimestamp();
     if (desc) data.description = desc;
     if (pendingPhotos.length) data.photos = pendingPhotos.slice(0, MAX_PHOTOS);
     if (pendingLoc) { data.lat = pendingLoc.lat; data.lng = pendingLoc.lng; }
 
-    const myUid = auth.currentUser.uid;
     const snap = await getDocs(query(collection(db, "rooms"), where("uid", "==", myUid)));
     const used = new Set(snap.docs.map((d) => d.id));
     let slot = 0;
@@ -1611,13 +1763,36 @@ async function shareRoom(id) {
   window.open("https://wa.me/?text=" + encodeURIComponent(text + " " + url), "_blank", "noopener");
 }
 
-/* ---------- EDIT MY ROOM ---------- */
+/* ---------- EDIT MY ROOM (photos can be changed now) ---------- */
+function showEdPreviews() {
+  const r = findRoom(editingId);
+  const list = edPhotosNew.length ? edPhotosNew : (r && Array.isArray(r.photos) ? r.photos : []);
+  let h = "";
+  list.forEach((p) => { if (typeof p === "string" && PHOTO_OK.test(p)) h += '<img class="ph" src="' + p + '" alt="">'; });
+  $("edPhotoPrev").innerHTML = h;
+}
+
+async function onEdPhotos() {
+  const files = Array.prototype.slice.call($("edPhotos").files || [], 0, MAX_PHOTOS);
+  edPhotosNew = [];
+  try {
+    for (const f of files) { edPhotosNew.push(await compress(f)); }
+  } catch (e) {
+    edPhotosNew = [];
+    $("edPhotos").value = "";
+    alert(T[lang].photoErr);
+  }
+  showEdPreviews();
+}
+
 function openEdit(id) {
   const r = findRoom(id);
   if (!r || !auth.currentUser || r.uid !== auth.currentUser.uid) return;
   const t = T[lang];
   const cur = CUR[roomCountry(r)];
   editingId = id;
+  edPhotosNew = [];
+  $("edPhotos").value = "";
   $("edTitle").value = r.title || "";
   $("edArea").value = r.area || "";
   $("edCity").value = r.city || "";
@@ -1638,11 +1813,13 @@ function openEdit(id) {
   $("edDesc").value = r.description || "";
   $("edPrice").placeholder = t.rentPh2.replace("{cur}", cur);
   $("edDeposit").placeholder = t.depositPh2.replace("{cur}", cur);
+  showEdPreviews();
   $("editModal").classList.add("open");
 }
 
 function closeEdit() {
   editingId = null;
+  edPhotosNew = [];
   $("editModal").classList.remove("open");
 }
 
@@ -1677,11 +1854,17 @@ async function saveEdit() {
     forWho: forWho, availFrom: availFrom, amenities: amenities, rules: rules,
     updatedAt: serverTimestamp()
   };
-  /* Rooms approved by phone verification stay approved. All other rooms go back to Pending,
-     so an admin checks the new details. */
+  const photosChanged = edPhotosNew.length > 0;
+  if (photosChanged) upd.photos = edPhotosNew.slice(0, MAX_PHOTOS);
+
+  /* Rooms of owners you verified (trusted) stay approved. Rooms approved by SMS phone verification
+     stay approved too, except when the photos are changed. All other rooms, and every room whose
+     photos were changed (unless trusted), go back to Pending so an admin checks the new details. */
   let resubmit = false;
   const ap = apOf(r);
-  if (ap !== "none" && !(ap === "approved" && r.approvalBy === "auto")) {
+  const by = r.approvalBy;
+  const keep = ap === "approved" && (by === "trusted" || (by === "auto" && !photosChanged));
+  if (ap !== "none" && !keep) {
     upd.approval = "pending";
     upd.approvalBy = "system";
     resubmit = true;
@@ -1699,7 +1882,7 @@ async function saveEdit() {
 }
 /* ---------- MY PROFILE (private page) ---------- */
 function updatePhoneUI() {
-  /* While SMS verification is switched off (SHOW_PHONE_VERIFY = false), hide all of it. */
+  /* while SMS verification is switched off (SHOW_PHONE_VERIFY = false), hide all of it */
   if (!SHOW_PHONE_VERIFY) {
     $("pfPhoneBadge").innerHTML = "";
     $("pvSend").style.display = "none";
@@ -1734,6 +1917,7 @@ function renderProfileDyn() {
     .replace("{favs}", String((profile.favs || []).length));
   $("pfInfo").textContent = t.pfInfo;
   updatePhoneUI();
+  renderWaBox();
 }
 
 function renderProfile() {
@@ -1752,9 +1936,8 @@ function renderProfile() {
   $("pfPhoto").value = "";
   $("pvStep2").style.display = "none";
   $("pvCode").value = "";
-  $("pvMsg") && ($("pvMsg").textContent = "");
-  $("pvInfo") && ($("pvInfo").textContent = "");
   renderProfileDyn();
+  loadWa().then(renderWaBox).catch(function () {});
 }
 
 async function onPfPhoto() {
@@ -1812,6 +1995,76 @@ async function saveProfile() {
   $("pfSave").disabled = false;
 }
 
+/* ---------- FREE PHONE CHECK BY WHATSAPP (you check it in Admin Settings) ---------- */
+const WA2 = {
+  en: { code: "Your code: {c}", again: "Open WhatsApp again" },
+  hi: { code: "आपका कोड: {c}", again: "WhatsApp फिर खोलें" },
+  ne: { code: "तपाईंको कोड: {c}", again: "WhatsApp फेरि खोल्नुहोस्" }
+};
+
+function renderWaBox() {
+  const box = $("waBox");
+  if (!box) return;
+  if (!SUPPORT_WA || !auth.currentUser) { box.style.display = "none"; return; }
+  box.style.display = "block";
+  const t = T[lang];
+  const x = WA2[lang] || WA2.en;
+  const phone = String((profile && profile.phone) || "");
+  const checked = !!(myWa && myWa.phone && phone && String(myWa.phone) === phone);
+  let st = "";
+  let btn = t.waBtn;
+  let showBtn = true;
+  if (checked) {
+    st = '<p><span class="tag ok">' + esc(t.waDone.replace("{p}", "+" + (myWa.cc || "") + " " + myWa.phone)) + '</span></p>';
+    showBtn = false;
+  } else if (myCheck && myCheck.status === "waiting" && String(myCheck.phone) === phone) {
+    st = '<p class="mini">' + esc(t.waWaiting) + '</p><p><b>' + esc(x.code.replace("{c}", myCheck.code || "")) + '</b></p>';
+    btn = x.again;
+  } else if (myCheck && myCheck.status === "rejected") {
+    st = '<p class="mini">' + esc(t.waRejected) + '</p>';
+  }
+  $("waStatus").innerHTML = st;
+  $("waBtn").style.display = showBtn ? "block" : "none";
+  $("waBtn").textContent = btn;
+}
+
+function openWaChat(code) {
+  const x = WA2[lang] || WA2.en;
+  const url = "https://wa.me/" + digits(SUPPORT_WA) + "?text=" + encodeURIComponent("Vhuba phone check: " + code);
+  const w = window.open(url, "_blank", "noopener");
+  if (!w) alert(x.code.replace("{c}", code));
+}
+
+async function waClick() {
+  const t = T[lang];
+  if (!SUPPORT_WA) { alert(t.waNotReady); return; }
+  if (needVerify("wa")) return;
+  const phone = String((profile && profile.phone) || "");
+  const cc = (profile && profile.phoneCc) || "91";
+  if (!/^[0-9]{10}$/.test(phone)) { alert(t.waNeedPhone); return; }
+  /* a request for this same number is already waiting: just open WhatsApp with the same code */
+  if (myCheck && myCheck.status === "waiting" && String(myCheck.phone) === phone && myCheck.code) {
+    openWaChat(myCheck.code);
+    return;
+  }
+  const arr = new Uint32Array(1);
+  crypto.getRandomValues(arr);
+  const code = String(100000 + (arr[0] % 900000));
+  const uid = auth.currentUser.uid;
+  $("waBtn").disabled = true;
+  try {
+    await setDoc(doc(db, "phoneChecks", uid), {
+      uid: uid, phone: phone, cc: cc, code: code, status: "waiting", createdAt: serverTimestamp()
+    });
+    myCheck = { uid: uid, phone: phone, cc: cc, code: code, status: "waiting" };
+    renderWaBox();
+    openWaChat(code);
+  } catch (e) {
+    alert(t.errGeneric + " (" + (e.code || e.message) + ")");
+  }
+  $("waBtn").disabled = false;
+}
+
 /* ---------- PHONE VERIFICATION BY SMS CODE (hidden while SHOW_PHONE_VERIFY is false) ---------- */
 function phoneError(code) {
   const t = T[lang];
@@ -1840,19 +2093,18 @@ function resetRecaptcha() {
 
 async function sendOtp() {
   const t = T[lang];
-  const msgBox = (txt) => { alert(txt); };
   const cc = $("pfCc").value;
   const num = digits($("pfPhone").value);
-  if (!/^[0-9]{10}$/.test(num)) { msgBox(t.pvErrInvalid); return; }
+  if (!/^[0-9]{10}$/.test(num)) { alert(t.pvErrInvalid); return; }
   $("pvSend").disabled = true;
   try {
     if (!recaptcha) recaptcha = new RecaptchaVerifier(auth, "pvCaptcha", { size: "invisible" });
     const provider = new PhoneAuthProvider(auth);
     pvId = await provider.verifyPhoneNumber("+" + cc + num, recaptcha);
     $("pvStep2").style.display = "block";
-    msgBox(t.pvSent);
+    alert(t.pvSent);
   } catch (e) {
-    msgBox(phoneError(e.code));
+    alert(phoneError(e.code));
     resetRecaptcha();
   }
   $("pvSend").disabled = false;
@@ -1936,7 +2188,7 @@ function renderOwner(uid) {
   renderReviews(uid);
 }
 
-/* ---------- OWNER REVIEWS (1 to 5 stars, one review per person) ---------- */
+/* ---------- OWNER REVIEWS (1 to 5 stars, one review per person, only after contacting the owner) ---------- */
 function starText(n) {
   const k = Math.max(0, Math.min(5, Math.round(Number(n) || 0)));
   return "★".repeat(k) + "☆".repeat(5 - k);
@@ -2013,10 +2265,10 @@ async function saveReview() {
   try {
     const ref = doc(db, "reviews", uid + "_" + me.uid);
     if (mine) {
-      await updateDoc(ref, { rating: rating, comment: comment, name: String(profile.name || "").trim() });
+      await updateDoc(ref, { rating: rating, comment: comment, name: String(profile.name || "") });
     } else {
       await setDoc(ref, {
-        ownerId: uid, uid: me.uid, name: String(profile.name || "").trim(),
+        ownerId: uid, uid: me.uid, name: String(profile.name || ""),
         rating: rating, comment: comment, createdAt: serverTimestamp()
       });
     }
@@ -2024,7 +2276,8 @@ async function saveReview() {
     await loadReviews(uid);
     alert(t.rvSaved);
   } catch (e) {
-    alert(t.errGeneric + " (" + (e.code || e.message) + ")");
+    /* a new review is refused until the person has contacted this owner */
+    alert(!mine && e.code === "permission-denied" ? t.rvNeedContact : (t.errGeneric + " (" + (e.code || e.message) + ")"));
   }
   $("rvSave").disabled = false;
 }
@@ -2044,7 +2297,7 @@ async function deleteMyReview() {
   }
 }
 
-/* admin can delete any review from the owner page */
+/* the admin can delete any review from the owner page */
 async function reviewListClick(e) {
   const id = e.target && e.target.getAttribute ? e.target.getAttribute("data-rvdel") : "";
   if (!id) return;
@@ -2156,6 +2409,62 @@ async function sendReport() {
   $("reportSendBtn").disabled = false;
 }
 
+/* ---------- MESSAGE TO AN OWNER WHO HIDES THE PHONE ---------- */
+function openMsg(rid) {
+  const r = findRoom(rid);
+  if (!r || !auth.currentUser) return;
+  if (needVerify("msg")) return;
+  const t = T[lang];
+  if (!/^[0-9]{10}$/.test(String((profile && profile.phone) || ""))) {
+    alert(t.msgNeedPhone);
+    showView("profile");
+    return;
+  }
+  msgRoomId = rid;
+  $("msgFor").textContent = r.title || "";
+  $("msgText").value = "";
+  $("msgAgree").checked = false;
+  $("msgCnt").textContent = "0 / 200";
+  $("msgModal").classList.add("open");
+}
+
+function closeMsg() {
+  msgRoomId = null;
+  $("msgModal").classList.remove("open");
+}
+
+async function sendMsg() {
+  const t = T[lang];
+  const rid = msgRoomId;
+  const r = findRoom(rid);
+  if (!rid || !r || !auth.currentUser) { closeMsg(); return; }
+  const text = $("msgText").value.trim().slice(0, 200);
+  if (!text) { alert(t.msgNeedText); return; }
+  if (!$("msgAgree").checked) { alert(t.msgNeedAgree); return; }
+  const uid = auth.currentUser.uid;
+  $("msgSendBtn").disabled = true;
+  try {
+    await setDoc(doc(db, "messages", rid + "_" + uid), {
+      roomId: rid, ownerId: r.uid, uid: uid, name: String(profile.name || ""),
+      phone: String(profile.phone || ""), cc: profile.phoneCc || "91",
+      text: text, read: false, createdAt: serverTimestamp()
+    });
+    alert(t.msgSent);
+    closeMsg();
+  } catch (e) {
+    alert(t.msgFail);
+  }
+  $("msgSendBtn").disabled = false;
+}
+
+/* ---------- WELCOME GUIDE (shown once) ---------- */
+async function closeTour() {
+  $("tourModal").classList.remove("open");
+  if (!profile || profile.tourDone === true) return;
+  profile.tourDone = true;
+  try { await updateDoc(uref(), { tourDone: true }); } catch (e) {}
+}
+
 function listClick(e) {
   const g = (n) => e.target.getAttribute && e.target.getAttribute(n);
   if (g("data-del")) deleteRoom(g("data-del"));
@@ -2168,6 +2477,7 @@ function listClick(e) {
   else if (g("data-big")) openBig(g("data-big"));
   else if (g("data-share")) shareRoom(g("data-share"));
   else if (g("data-edit")) openEdit(g("data-edit"));
+  else if (g("data-msg")) openMsg(g("data-msg"));
   else if (g("data-open")) openRoom(g("data-open"));
   else if (g("data-more")) { listLimit += PAGE; render(); }
 }
@@ -2204,7 +2514,7 @@ async function openRoommates() {
   if (currentView === "roommates") renderRoommates();
 }
 
-/* Match %: location, budget, food, smoking and work. Different countries or a gender
+/* match %: location, budget, food, smoking and work. Different countries or a gender
    choice that does not fit gives 0. */
 function matchScore(a, b) {
   const lc = (x) => String(x || "").trim().toLowerCase();
@@ -2405,7 +2715,7 @@ async function deleteRoommate() {
   }
 }
 
-/* A roommate post is reported as a "problem" report, so the admin sees it in Report Management. */
+/* a roommate post is reported as a "problem" report, so the admin sees it in Report Management */
 async function reportRoommate(postUid) {
   const t = T[lang];
   const p = rmData.find((x) => x.uid === postUid);
@@ -2569,10 +2879,12 @@ $("pfCc").addEventListener("change", updatePhoneUI);
 $("pfPhone").addEventListener("input", updatePhoneUI);
 $("pvSend").addEventListener("click", sendOtp);
 $("pvConfirm").addEventListener("click", confirmOtp);
+$("waBtn").addEventListener("click", waClick);
 $("pfLang").addEventListener("change", function () { changeLang(this.value); });
 $("lang").addEventListener("change", function () { changeLang(this.value); });
 
 $("photos").addEventListener("change", onPhotos);
+$("edPhotos").addEventListener("change", onEdPhotos);
 $("locBtn").addEventListener("click", useMyLocation);
 $("locClear").addEventListener("click", clearLocation);
 $("bigClose").addEventListener("click", closeBig);
@@ -2582,6 +2894,7 @@ $("country").addEventListener("change", () => {
   const c = $("country").value;
   if (c) $("cc").value = (c === "IN") ? "91" : "977";
   updateCurrencyUI();
+  buildCityList();
 });
 $("countryFilter").addEventListener("change", () => {
   $("budgetFilter").value = "";
@@ -2609,6 +2922,25 @@ $("search").addEventListener("input", render);
   $(id).addEventListener("change", render);
 });
 $("sortBy").addEventListener("change", onSortChange);
+
+/* quick chips and suggested rooms */
+document.querySelectorAll("[data-qt]").forEach((b) => {
+  b.addEventListener("click", () => { $("typeFilter").value = b.getAttribute("data-qt"); render(); });
+});
+document.querySelectorAll("[data-qf]").forEach((b) => {
+  b.addEventListener("click", () => { $("fwFilter").value = b.getAttribute("data-qf"); render(); });
+});
+$("sugBox").addEventListener("click", (e) => {
+  const el = e.target && e.target.closest ? e.target.closest("[data-open]") : null;
+  if (el) openRoom(el.getAttribute("data-open"), "find");
+});
+
+/* message to the owner, messages inbox, welcome guide */
+$("msgSendBtn").addEventListener("click", sendMsg);
+$("msgCancel").addEventListener("click", closeMsg);
+$("msgText").addEventListener("input", () => { $("msgCnt").textContent = $("msgText").value.length + " / 200"; });
+$("msgBox").addEventListener("click", msgBoxClick);
+$("tourBtn").addEventListener("click", closeTour);
 
 /* reviews */
 $("rvSave").addEventListener("click", saveReview);

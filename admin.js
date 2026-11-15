@@ -29,9 +29,11 @@ const LOG_L = {
   fix_old_rooms: "Old rooms fixed", report_reviewed: "Report marked reviewed",
   report_resolved: "Report marked resolved", report_rejected: "Report rejected",
   user_block: "User blocked", user_unblock: "User unblocked",
-  roommate_remove: "Roommate post removed"
+  roommate_remove: "Roommate post removed",
+  phone_check_ok: "Phone check accepted", phone_check_no: "Phone check rejected",
+  settings_save: "Settings saved", message_remove: "Message removed"
 };
-const TAB_IDS = ["overview", "reports", "rooms", "users", "roommates", "approval", "security", "profile", "activity"];
+const TAB_IDS = ["overview", "reports", "rooms", "users", "roommates", "approval", "settings", "security", "profile", "activity"];
 const PHOTO_OK = /^data:image\/jpeg;base64,[A-Za-z0-9+\/=]+$/;
 const LINE = "border-top:1px solid var(--border);margin-top:8px;padding-top:8px";
 const SHOW_MAX = 40;
@@ -43,7 +45,7 @@ export function initAdmin(c) {
   let rc = {};
   let current = "overview";
   let rpFilter = "new";
-  let rFilter = "pending";
+  let rFilter = "attention";
   let rQuery = "";
   let uQuery = "";
   let usersAll = [];
@@ -51,6 +53,9 @@ export function initAdmin(c) {
   let rmToken = 0;
   let rmaAll = [];
   let rmaQuery = "";
+  let photoKb = 400;
+  let attReports = [];
+  let attChecks = [];
   try { current = localStorage.getItem("vhubaAdminTab") || "overview"; } catch (e) {}
   if (TAB_IDS.indexOf(current) === -1) current = "overview";
 
@@ -95,7 +100,29 @@ export function initAdmin(c) {
     return h ? '<div class="phs">' + h + '</div>' : '<p class="mini">No photos.</p>';
   }
 
-  /* ---------- SHARED ROOM PIECES ---------- */
+  /* total size of all photos of a room in KB (a room can never be more than about 1000 KB) */
+  function roomKb(r) {
+    const ph = Array.isArray(r.photos) ? r.photos : [];
+    let n = 0;
+    ph.forEach((p) => { if (typeof p === "string") n += p.length; });
+    return Math.round(n / 1024);
+  }
+
+  /* a small line above a room: is it visible in Find, and if not, why */
+  function liveInfo(r) {
+    const upd = r.updatedAt || r.createdAt;
+    const left = (upd && upd.toMillis) ? Math.ceil((upd.toMillis() + 30 * 86400000 - Date.now()) / 86400000) : 30;
+    let why = "";
+    if (apOf(r) !== "approved") why = "not approved yet";
+    else if (r.hidden) why = "hidden by admin";
+    else if (r.status === "rented") why = "marked as rented";
+    else if (left <= 0) why = "30 days are over (the owner must press Renew)";
+    else if (Number(r.reportCount || 0) >= 3) why = "3 or more reports";
+    return '<div style="margin:12px 0 -6px 0"><span class="tag ' + (why ? "bad" : "ok") + '">' +
+      (why ? "Not visible in Find: " + esc(why) : "✔ Visible in Find") + '</span></div>';
+  }
+
+  /* ---------- ROOM PIECES ---------- */
   function checksHtml(r, owner) {
     const photo = Array.isArray(r.photos) && r.photos.length > 0;
     const email = owner ? (owner.emailVerified === true) : null;
@@ -125,26 +152,31 @@ export function initAdmin(c) {
 
   function roomCard(r, owner) {
     const ap = apOf(r);
+    const kb = roomKb(r);
     return '<div class="card" style="margin:12px 0"><h3 style="padding-right:0">' + esc(r.title || "") + '</h3>' +
       tag(AP_L[ap], AP_C[ap]) +
       (r.hidden ? tag("hidden by admin", "bad") : "") +
       (Number(r.reportCount || 0) >= 3 ? tag("auto-hidden (3+ reports)", "bad") : "") +
       (r.status === "rented" ? tag("rented") : "") +
+      (kb > photoKb ? tag("Heavy photos: " + kb + " KB", "bad") : "") +
       '<p>' + esc(c.fmt(r)) + ' / month · ' + esc(r.area || "") + ' · ' + esc(TYPE_L[r.type] || "") + '</p>' +
       '<p class="mini">Owner: ' + esc(owner ? (owner.name || "-") : "(profile not found)") +
       (owner && owner.email ? " · " + esc(owner.email) : "") + '</p>' +
       '<p class="mini">Phone on the room: ' + esc(r.phone ? ("+" + (r.cc || "") + " " + r.phone) : "hidden by owner") + '</p>' +
       (r.approvalBy === "auto" ? '<p class="mini">✔ Approved automatically: email, photo, name and an SMS-verified phone (same as the room number) all passed.</p>' : '') +
+      (r.approvalBy === "trusted" ? '<p class="mini">✔ Approved automatically: this owner is a Verified owner.</p>' : '') +
       (r.approvalReason ? '<p class="mini">Last decision reason: ' + esc(r.approvalReason) + '</p>' : '') +
       (r.hiddenReason ? '<p class="mini">Hide reason: ' + esc(r.hiddenReason) + '</p>' : '') +
       (r.description ? '<p>' + esc(r.description) + '</p>' : '') +
-      photosOf(r) + checksHtml(r, owner) +
+      photosOf(r) + '<p class="mini">Photos total: ' + kb + ' KB</p>' + checksHtml(r, owner) +
       '<p class="mini">Room ID: ' + esc(r.id) + '</p><p class="mini">Owner ID: ' + esc(r.uid || "") + '</p>' +
       roomButtons(r, "") + '</div>';
   }
 
-  /* One function does every room decision, so the room, the activity log, the owner notice
-     and (optionally) the report are always saved together. */
+  const roomCard2 = (r, owner) => liveInfo(r) + roomCard(r, owner);
+
+  /* one function does every room decision, so the room, the activity log, the owner notice
+     and (optionally) the report are always saved together */
   async function roomAction(rid, action, reportId) {
     const needReason = action !== "approve" && action !== "restore";
     if (action === "remove" && !confirm("Delete this room permanently? A short copy is kept in the activity log.")) return false;
@@ -198,10 +230,16 @@ export function initAdmin(c) {
     return true;
   }
 
+  /* Verified owner: rooms of this person are approved automatically. Removing the mark also
+     removes the WhatsApp-checked number. */
   async function verifyUser(uid, on) {
     const batch = writeBatch(db);
-    if (on) batch.set(doc(db, "verified", uid), { ok: true });
-    else batch.delete(doc(db, "verified", uid));
+    if (on) {
+      batch.set(doc(db, "verified", uid), { ok: true });
+    } else {
+      batch.delete(doc(db, "verified", uid));
+      batch.delete(doc(db, "waPhone", uid));
+    }
     batch.set(doc(collection(db, "adminLogs")), logDoc({
       action: on ? "verify_owner" : "unverify_owner", targetType: "user", targetId: uid, reason: ""
     }));
@@ -255,7 +293,7 @@ export function initAdmin(c) {
   }
 
   /* ---------- CSV DOWNLOAD ---------- */
-  /* A cell that starts with = + - or @ could run as a formula in Excel, so a quote mark is put in front. */
+  /* a cell that starts with = + - or @ could run as a formula in Excel, so a quote mark is put in front */
   function csvCell(v) {
     let s = (v === null || v === undefined) ? "" : String(v);
     if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
@@ -280,11 +318,11 @@ export function initAdmin(c) {
     const iso = (ts) => (ts && ts.toDate) ? ts.toDate().toISOString() : "";
     if (kind === "rooms") {
       const rows = [["id", "title", "type", "location", "area", "city", "country", "price", "currency", "deposit",
-        "approval", "status", "hidden", "reports", "for_who", "facilities", "available_from", "phone", "owner_id", "created"]];
+        "approval", "status", "hidden", "reports", "for_who", "facilities", "available_from", "photos_kb", "phone", "owner_id", "created"]];
       c.getRooms().forEach((r) => {
         rows.push([r.id, r.title, r.type, r.loc, r.area, r.city, c.country(r), r.price, r.currency, r.deposit,
           apOf(r), r.status, r.hidden ? "yes" : "no", r.reportCount || 0, r.forWho || "",
-          Array.isArray(r.amenities) ? r.amenities.join(" | ") : "", r.availFrom || "",
+          Array.isArray(r.amenities) ? r.amenities.join(" | ") : "", r.availFrom || "", roomKb(r),
           r.phone ? ("+" + (r.cc || "") + r.phone) : "", r.uid, iso(r.createdAt)]);
       });
       downloadCsv("vhuba-rooms-" + day + ".csv", rows);
@@ -309,110 +347,6 @@ export function initAdmin(c) {
       });
       downloadCsv("vhuba-roommates-" + day + ".csv", rows);
     }
-  }
-
-  /* ---------- OVERVIEW AND ANALYTICS ---------- */
-  async function cnt(q) {
-    try { return (await getCountFromServer(q)).data().count; } catch (e) { return "?"; }
-  }
-
-  const stat = (label, val, hint) =>
-    '<div class="card" style="margin:0;padding:10px"><div style="font-size:24px;font-weight:bold">' + esc(String(val)) +
-    '</div><div>' + esc(label) + '</div>' + (hint ? '<div class="mini">' + esc(hint) + '</div>' : '') + '</div>';
-  const grid = (arr) => '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">' + arr.join("") + '</div>';
-
-  async function overview() {
-    const now = Date.now();
-    const day0 = new Date();
-    day0.setHours(0, 0, 0, 0);
-    const U = collection(db, "users");
-    const E = collection(db, "events");
-    const R = collection(db, "rooms");
-    const v = await Promise.all([
-      cnt(query(U)),
-      cnt(query(U, where("createdAt", ">=", day0))),
-      cnt(query(U, where("createdAt", ">=", new Date(now - 7 * 86400000)))),
-      cnt(query(U, where("lastActive", ">=", new Date(now - 5 * 60000)))),
-      cnt(query(E, where("type", "==", "login"))),
-      cnt(query(E, where("type", "==", "logout"))),
-      cnt(query(R)),
-      cnt(query(R, where("approval", "==", "pending"))),
-      cnt(query(R, where("approval", "==", "approved"))),
-      cnt(query(R, where("approval", "==", "needs_review"))),
-      cnt(query(R, where("approval", "==", "rejected"))),
-      cnt(query(R, where("reportCount", ">=", 1))),
-      cnt(query(collection(db, "roommates"))),
-      cnt(query(collection(db, "reviews"))),
-      cnt(query(collection(db, "contacts")))
-    ]);
-    let l24 = 0, o24 = 0;
-    try {
-      const s = await getDocs(query(E, where("createdAt", ">=", new Date(now - 86400000)), orderBy("createdAt", "desc"), limit(500)));
-      s.docs.forEach((d) => { const t = d.data().type; if (t === "login") l24++; if (t === "logout") o24++; });
-    } catch (e) { l24 = "?"; o24 = "?"; }
-
-    let feed = [];
-    try {
-      const fs = await getDocs(query(E, orderBy("createdAt", "desc"), limit(80)));
-      feed = fs.docs.map((d) => d.data()).filter((e) => e.type === "signup" || e.type === "room_added" || e.type === "room_reported").slice(0, 20);
-    } catch (e) {}
-    await Promise.all(feed.map(async (e) => { await getUser(e.uid); if (e.roomId) await getRoom(e.roomId); }));
-
-    const total = v[6], sum = [v[7], v[8], v[9], v[10]].every((x) => typeof x === "number") ? v[7] + v[8] + v[9] + v[10] : null;
-    const legacy = (typeof total === "number" && sum !== null) ? total - sum : 0;
-
-    let fh = "";
-    feed.forEach((e) => {
-      const u = uc[e.uid];
-      const nm = u ? (u.name || "-") : "someone";
-      const room = e.roomId ? rc[e.roomId] : null;
-      const rt = room ? room.title : "(room deleted)";
-      const txt = e.type === "signup" ? "🆕 New registration: " + nm
-        : e.type === "room_added" ? "🏠 New room submitted: " + rt + " (by " + nm + ")"
-        : "🚩 Room reported: " + rt + " (by " + nm + ")";
-      fh += '<p style="margin:6px 0">' + esc(txt) + '<br><span class="mini">' + esc(fts(e.createdAt)) + '</span></p>';
-    });
-
-    body().innerHTML =
-      '<h3 class="title">Users</h3>' +
-      grid([
-        stat("Registered users", v[0], "accounts in Firebase"),
-        stat("Active now", v[3], "used the app in the last 5 minutes"),
-        stat("New today", v[1]),
-        stat("New this week", v[2], "last 7 days")
-      ]) +
-      '<h3 class="title">Login and logout events</h3>' +
-      grid([
-        stat("Login events", v[4], "all time"),
-        stat("Logout events", v[5], "all time"),
-        stat("Logins, last 24h", l24, "latest 500 events"),
-        stat("Logouts, last 24h", o24, "latest 500 events")
-      ]) +
-      '<p class="mini">Login and logout events are counted when a person presses login or logout in the app. A logout is not an uninstall. Firebase does not tell us about uninstalls, so no uninstall number is shown.</p>' +
-      '<h3 class="title">Rooms</h3>' +
-      grid([
-        stat("Total rooms published", v[6]),
-        stat("Pending", v[7]),
-        stat("Approved", v[8]),
-        stat("Needs review", v[9]),
-        stat("Rejected", v[10]),
-        stat("Reported rooms", v[11], "at least one report")
-      ]) +
-      (legacy > 0 ? '<p class="mini">⚠ ' + legacy + ' old rooms have no approval status. Open Room Approval Settings and press "Fix old rooms".</p>' : '') +
-      '<h3 class="title">Community</h3>' +
-      grid([
-        stat("Roommate posts", v[12]),
-        stat("Owner reviews", v[13]),
-                stat("Contact taps", v[14], "Call, WhatsApp or visit taps (one per person per room)")
-      ]) +
-      '<div><button class="act" data-a="goto" data-tab="rooms" data-filter="pending">Open pending rooms</button>' +
-      '<button class="act gray" data-a="goto" data-tab="reports">Open new reports</button></div>' +
-      '<h3 class="title" style="margin-top:16px">Download (CSV)</h3>' +
-      '<div><button class="act" data-a="csv" data-kind="rooms">Rooms CSV</button>' +
-      '<button class="act gray" data-a="csv" data-kind="users">Users CSV</button>' +
-      '<button class="act gray" data-a="csv" data-kind="roommates">Roommate posts CSV</button></div>' +
-      '<h3 class="title" style="margin-top:16px">Notifications</h3>' +
-      '<div class="card" style="margin:0">' + (fh || '<p class="mini">Nothing new yet.</p>') + '</div>';
   }
 
   /* ---------- REPORT MANAGEMENT ---------- */
@@ -460,7 +394,7 @@ export function initAdmin(c) {
         '<p>Email: ' + (o.email ? esc(o.email) : '<span class="mini">not saved yet (owner has not logged in since the update)</span>') + '</p>' +
         '<p>Email verified: ' + (o.emailVerified === true ? tag("Yes", "ok") : o.emailVerified === false ? tag("No", "bad") : '<span class="mini">unknown</span>') + '</p>' +
         '<p>Phone verified by SMS code: ' + (o.phoneVerified === true ? tag("Yes", "ok") : tag("No", "bad")) + '</p>' +
-        '<p class="mini">Compare the profile phone with the phone on the room. A room approved automatically always shows the verified number.</p>';
+        '<p class="mini">Compare the profile phone with the phone on the room.</p>';
     } else {
       h += '<p class="mini">Owner profile not found (account may be deleted).</p>';
     }
@@ -533,319 +467,33 @@ export function initAdmin(c) {
       box.innerHTML = '<div class="empty">Could not load. Check rules and admin setup.</div>';
     }
   }
-  /* ---------- ROOM MANAGEMENT ---------- */
-  function roomMatchesFilter(r, f) {
-    if (f === "all") return true;
-    if (f === "hidden") return r.hidden === true;
-    if (f === "reported") return Number(r.reportCount || 0) >= 1;
-    return apOf(r) === f;
-  }
-
-  async function roomsTab() {
-    body().innerHTML = '<select id="rmFilter">' +
-      '<option value="pending">Pending</option><option value="needs_review">Needs review</option>' +
-      '<option value="approved">Approved</option><option value="rejected">Rejected</option>' +
-      '<option value="hidden">Hidden by admin</option><option value="reported">Reported (1+)</option>' +
-      '<option value="none">Old rooms (no status)</option><option value="all">All rooms</option></select>' +
-      '<input id="rmSearch" placeholder="Search title, area, owner name, email or ID">' +
-      '<p id="rmSummary" class="mini"></p><div id="rmList"></div>';
-    $("rmFilter").value = rFilter;
-    $("rmSearch").value = rQuery;
-    $("rmFilter").addEventListener("change", () => { rFilter = $("rmFilter").value; renderRooms(); });
-    $("rmSearch").addEventListener("input", () => { rQuery = $("rmSearch").value.trim().toLowerCase(); renderRooms(); });
-    await renderRooms();
-  }
-
-  async function renderRooms() {
-    const box = $("rmList");
-    if (!box) return;
-    const token = ++rmToken;
-    const all = c.getRooms();
-    const sorted = all.slice().sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
-    let list = sorted.filter((r) => roomMatchesFilter(r, rFilter));
-    if (rQuery) {
-      await Promise.all(list.map((r) => getUser(r.uid)));
-      if (token !== rmToken) return;
-      list = list.filter((r) => {
-        const o = uc[r.uid];
-        const text = [r.title, r.area, r.id, r.uid, o && o.name, o && o.email].join(" ").toLowerCase();
-        return text.indexOf(rQuery) !== -1;
-      });
-    }
-    const shown = list.slice(0, SHOW_MAX);
-    await Promise.all(shown.map((r) => getUser(r.uid)));
-    if (token !== rmToken || !$("rmList")) return;
-    const sm = $("rmSummary");
-    if (sm) sm.textContent = list.length + " rooms found" + (list.length > SHOW_MAX ? " (showing first " + SHOW_MAX + ")" : "") + " · " + all.length + " total loaded";
-    let html = "";
-    shown.forEach((r) => { html += roomCard(r, uc[r.uid]); });
-    $("rmList").innerHTML = html || '<div class="empty">No rooms here.</div>';
-  }
-
-  /* ---------- USER MANAGEMENT ---------- */
-  async function usersTab() {
-    body().innerHTML = '<input id="usSearch" placeholder="Search name, email, phone or ID">' +
-      '<p id="usSummary" class="mini"></p><div id="usList"><div class="empty">Loading...</div></div>';
-    $("usSearch").value = uQuery;
-    $("usSearch").addEventListener("input", () => { uQuery = $("usSearch").value.trim().toLowerCase(); renderUsers(); });
-    try {
-      const snap = await getDocs(query(collection(db, "users"), limit(500)));
-      usersAll = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      usersAll.sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
-      try {
-        const bs = await getDocs(collection(db, "blocked"));
-        blockedSet = new Set(bs.docs.map((d) => d.id));
-      } catch (e) {}
-      renderUsers();
-    } catch (e) {
-      if ($("usList")) $("usList").innerHTML = '<div class="empty">Could not load users. Check rules and admin setup.</div>';
-    }
-  }
-
-  function renderUsers() {
-    const box = $("usList");
-    if (!box) return;
-    const ver = c.getVerified();
-    const rooms = c.getRooms();
-    let list = usersAll;
-    if (uQuery) {
-      list = usersAll.filter((u) => [u.name, u.email, u.phone, u.id].join(" ").toLowerCase().indexOf(uQuery) !== -1);
-    }
-    $("usSummary").textContent = list.length + " users found" + (list.length > SHOW_MAX ? " (showing first " + SHOW_MAX + ")" : "") + " · " + usersAll.length + " loaded";
-    let html = "";
-    list.slice(0, SHOW_MAX).forEach((u) => {
-      const isV = ver.has(u.id);
-      const isB = blockedSet.has(u.id);
-      const rc2 = rooms.filter((r) => r.uid === u.id).length;
-      html += '<div class="card" style="margin:12px 0"><h3 style="padding-right:0">' + esc(u.name || "-") + '</h3>' +
-        (isB ? tag("Blocked", "bad") : "") +
-        (isV ? tag("✔ Verified owner", "ok") : "") +
-        (u.emailVerified === true ? tag("Email verified", "ok") : tag("Email not verified", "bad")) +
-        (u.phoneVerified === true ? tag("Phone verified", "ok") : tag("Phone not verified")) +
-        '<p class="mini">Email: ' + esc(u.email || "-") + '</p>' +
-        '<p class="mini">Phone: ' + esc(u.phone ? ("+" + (u.phoneCc || "") + " " + u.phone) : "-") + (u.hidePhone ? " (hidden on rooms)" : "") + '</p>' +
-        '<p class="mini">Rooms: ' + rc2 + ' · Favourites: ' + ((u.favs || []).length) + '</p>' +
-        '<p class="mini">Joined: ' + esc(fts(u.createdAt) || "-") + '</p>' +
-        '<p class="mini">Last active: ' + esc(fts(u.lastActive) || "-") + '</p>' +
-        '<p class="mini">User ID: ' + esc(u.id) + '</p>' +
-        '<div style="' + LINE + '">' +
-        (isV
-          ? '<button class="act gray" data-a="uunver" data-uid="' + esc(u.id) + '">Remove verified mark</button>'
-          : '<button class="act" data-a="uver" data-uid="' + esc(u.id) + '">Verify this owner</button>') +
-        (isB
-          ? '<button class="act" data-a="uunblock" data-uid="' + esc(u.id) + '">Unblock user</button>'
-          : (u.id === c.getUid() ? '' : '<button class="del" data-a="ublock" data-uid="' + esc(u.id) + '">Block user</button>')) +
-        '</div></div>';
-    });
-    box.innerHTML = html || '<div class="empty">No users found.</div>';
-  }
-
-  /* ---------- ROOMMATE POSTS (new) ---------- */
-  async function roommatesTab() {
-    body().innerHTML = '<input id="rmaSearch" placeholder="Search name, city, phone or ID">' +
-      '<p id="rmaSummary" class="mini"></p><div id="rmaList"><div class="empty">Loading...</div></div>';
-    $("rmaSearch").value = rmaQuery;
-    $("rmaSearch").addEventListener("input", () => { rmaQuery = $("rmaSearch").value.trim().toLowerCase(); renderRmPosts(); });
-    try {
-      const snap = await getDocs(query(collection(db, "roommates"), limit(300)));
-      rmaAll = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      rmaAll.sort((a, b) => ms(b.updatedAt) - ms(a.updatedAt));
-      try {
-        const bs = await getDocs(collection(db, "blocked"));
-        blockedSet = new Set(bs.docs.map((d) => d.id));
-      } catch (e) {}
-      renderRmPosts();
-    } catch (e) {
-      if ($("rmaList")) $("rmaList").innerHTML = '<div class="empty">Could not load. Check rules and admin setup.</div>';
-    }
-  }
-
-  function renderRmPosts() {
-    const box = $("rmaList");
-    if (!box) return;
-    let list = rmaAll;
-    if (rmaQuery) {
-      list = rmaAll.filter((p) => [p.name, p.city, p.area, p.phone, p.id].join(" ").toLowerCase().indexOf(rmaQuery) !== -1);
-    }
-    $("rmaSummary").textContent = list.length + " posts found" + (list.length > SHOW_MAX ? " (showing first " + SHOW_MAX + ")" : "") + " · " + rmaAll.length + " loaded";
-    let html = "";
-    list.slice(0, SHOW_MAX).forEach((p) => {
-      html += '<div class="card" style="margin:12px 0"><h3 style="padding-right:0">' + esc(p.name || "-") + '</h3>' +
-        tag(p.kind === "haveRoom" ? "Has a room" : "Needs a room", p.kind === "haveRoom" ? "ok" : "new") +
-        tag(p.gender || "") +
-        (blockedSet.has(p.id) ? tag("Blocked", "bad") : "") +
-        '<p>' + esc(p.city || "") + (p.area ? ', ' + esc(p.area) : '') + ' · ' + esc(p.country || "") + '</p>' +
-        '<p>Budget: ' + esc(String(p.budget == null ? "" : p.budget)) + ' ' + esc(p.currency || "") + ' / month</p>' +
-        '<p class="mini">Wants: ' + esc(p.want || "") + ' · Food: ' + esc(p.diet || "") + ' · Smoking: ' + esc(p.smoking || "") +
-        ' · Work: ' + esc(p.work || "") + '</p>' +
-        (p.moveIn ? '<p class="mini">Move in: ' + esc(p.moveIn) + '</p>' : '') +
-        '<p class="mini">Phone: ' + esc(p.phone ? ("+" + (p.cc || "") + " " + p.phone) : "-") + '</p>' +
-        (p.about ? '<p>' + esc(p.about) + '</p>' : '') +
-        '<p class="mini">Updated: ' + esc(fts(p.updatedAt) || "-") + '</p>' +
-        '<p class="mini">User ID: ' + esc(p.id) + '</p>' +
-        '<div style="' + LINE + '">' +
-        '<button class="del" data-a="rmdel" data-uid="' + esc(p.id) + '">Remove this post</button>' +
-        (p.id === c.getUid() ? '' : '<button class="del" data-a="ublock" data-uid="' + esc(p.id) + '">Block this user</button>') +
-        '</div></div>';
-    });
-    box.innerHTML = html || '<div class="empty">No roommate posts here.</div>';
-  }
-
-  async function removeRoommatePost(uid) {
-    if (!confirm("Remove this roommate post? The person can post again later.")) return false;
-    const ans = prompt("Reason (optional, only admins see it):", "");
-    if (ans === null) return false;
-    const b = writeBatch(db);
-    b.delete(doc(db, "roommates", uid));
-    b.set(doc(collection(db, "adminLogs")), logDoc({
-      action: "roommate_remove", targetType: "roommate", targetId: uid, ownerId: uid, reason: ans.trim().slice(0, 300)
-    }));
-    await b.commit();
-    return true;
-  }
-
-  /* ---------- ROOM APPROVAL SETTINGS ---------- */
-  function approvalTab() {
-    const rooms = c.getRooms();
-    const n = { pending: 0, approved: 0, needs_review: 0, rejected: 0, none: 0 };
-    rooms.forEach((r) => { const a = apOf(r); if (a in n) n[a]++; });
-    body().innerHTML =
-      '<h3 class="title">Room approval</h3>' +
-      grid([
-        stat("Pending", n.pending),
-        stat("Needs review", n.needs_review),
-        stat("Approved", n.approved),
-        stat("Rejected", n.rejected),
-        stat("Old rooms (no status)", n.none)
-      ]) +
-      '<div class="card" style="margin:12px 0"><b>How rooms get approved</b>' +
-      '<p class="mini">Every new room starts as Pending.</p>' +
-      '<p class="mini">A room is approved automatically only when: the owner verified a phone number by SMS code, that number is the one on the room (or the owner hides the number), the room has at least one photo, and the owner has a name.</p>' +
-      '<p class="mini">All other rooms wait here for an admin. Open Room Management and choose Pending.</p>' +
-      '<p class="mini">A room with 3 or more reports hides itself automatically.</p></div>' +
-      '<div class="card" style="margin:12px 0"><b>Fix old rooms</b>' +
-      '<p class="mini">Rooms added before the approval system have no status and stay hidden from searches. This approves all of them in one step.</p>' +
-      (n.none > 0
-        ? '<button class="act" data-a="fixold">Fix old rooms (' + n.none + ')</button>'
-        : '<p class="mini">✔ No old rooms need fixing.</p>') +
-      '</div>' +
-      '<div><button class="act gray" data-a="goto" data-tab="rooms" data-filter="pending">Open pending rooms</button></div>';
-  }
-
-  async function fixOldRooms() {
-    const old = c.getRooms().filter((r) => apOf(r) === "none");
-    if (!old.length) { alert("No old rooms need fixing."); return; }
-    if (!confirm("Approve " + old.length + " old rooms? They will become visible to everyone.")) return;
-    for (let i = 0; i < old.length; i += 200) {
-      const part = old.slice(i, i + 200);
-      const b = writeBatch(db);
-      part.forEach((r) => {
-        b.update(doc(db, "rooms", r.id), {
-          approval: "approved", approvalBy: "legacy", approvalAt: serverTimestamp(),
-          approvalReason: "Old room approved by admin"
-        });
-      });
-      b.set(doc(collection(db, "adminLogs")), logDoc({
-        action: "fix_old_rooms", targetType: "rooms", targetId: "", reason: part.length + " old rooms approved"
-      }));
-      await b.commit();
-    }
-    alert(old.length + " old rooms approved.");
-  }
-
-  /* ---------- SECURITY SETTINGS ---------- */
-  async function securityTab() {
-    body().innerHTML = '<div class="empty">Loading...</div>';
-    const ver = Array.from(c.getVerified());
-    await Promise.all(ver.map((id) => getUser(id)));
-    let vh = "";
-    ver.forEach((id) => {
-      const u = uc[id];
-      vh += '<div class="card" style="margin:8px 0"><b>' + esc(u ? (u.name || "-") : "(profile not found)") + '</b>' +
-        '<p class="mini">' + esc(u && u.email ? u.email : "") + '</p>' +
-        '<p class="mini">ID: ' + esc(id) + '</p>' +
-        '<button class="act gray" data-a="uunver" data-uid="' + esc(id) + '">Remove verified mark</button></div>';
-    });
-    if (current !== "security") return;
-    body().innerHTML =
-      '<h3 class="title">Verified owners</h3>' +
-      '<p class="mini">A verified mark means you checked this person yourself. The owner gives you their ID from Settings.</p>' +
-      '<input id="vidInput" placeholder="Paste the owner ID here">' +
-      '<button class="act" data-a="vadd">Verify this owner ID</button>' +
-      '<div style="margin-top:10px">' + (vh || '<p class="mini">No verified owners yet.</p>') + '</div>' +
-      '<h3 class="title" style="margin-top:16px">Security notes</h3>' +
-      '<div class="card" style="margin:8px 0">' +
-      '<p class="mini">Admin access is decided by the Firebase rules: the logged-in email must be verified and must match the admin email written in the rules. Nothing in this page can change that.</p>' +
-      '<p class="mini">Every admin action is saved in Admin Activity History and cannot be edited or deleted.</p>' +
-      '<p class="mini">Keep your admin email password strong and never share it.</p></div>';
-  }
-
-  /* ---------- ADMIN PROFILE ---------- */
-  function profileTab() {
-    const p = c.getProfile() || {};
-    const u = auth.currentUser;
-    body().innerHTML =
-      '<h3 class="title">Admin profile</h3>' +
-      '<div class="card" style="margin:8px 0">' +
-      '<p>Name: ' + esc(p.name || "-") + '</p>' +
-      '<p class="mini">Email: ' + esc((u && u.email) || "-") + '</p>' +
-      '<p class="mini">Email verified: ' + ((u && u.emailVerified) ? "Yes" : "No") + '</p>' +
-      '<p class="mini">Admin ID: ' + esc(c.getUid()) + '</p></div>' +
-      '<button class="act" data-a="resetpw">Send password reset email</button>' +
-      '<button class="del" data-a="logout">Logout</button>' +
-      '<p class="mini" style="margin-top:12px">Admin remembers the last tab you opened.</p>';
-  }
-
-  /* ---------- ADMIN ACTIVITY HISTORY ---------- */
-  async function activityTab() {
-    body().innerHTML = '<div class="empty">Loading...</div>';
-    try {
-      const snap = await getDocs(query(collection(db, "adminLogs"), orderBy("createdAt", "desc"), limit(100)));
-      let html = '<p class="mini">Latest 100 admin actions.</p>';
-      snap.docs.forEach((d) => {
-        const l = d.data();
-        const s = l.snapshot;
-        html += '<div class="card" style="margin:8px 0"><b>' + esc(LOG_L[l.action] || l.action || "") + '</b>' +
-          (s && s.title ? '<p>' + esc(s.title) + '</p>' : '') +
-          (l.reason ? '<p class="mini">Reason: ' + esc(l.reason) + '</p>' : '') +
-          '<p class="mini">By: ' + esc(l.adminEmail || l.adminId || "") + '</p>' +
-          (l.targetId ? '<p class="mini">Target ID: ' + esc(l.targetId) + '</p>' : '') +
-          '<p class="mini">' + esc(fts(l.createdAt)) + '</p></div>';
-      });
-      if (current !== "activity") return;
-      body().innerHTML = snap.empty ? '<div class="empty">No admin actions yet.</div>' : html;
-    } catch (e) {
-      body().innerHTML = '<div class="empty">Could not load. Check rules and admin setup.</div>';
-    }
-  }
-  /* =====================================================================
-     NEW (v2): room list fix, tap-to-open details, "Needs your attention"
+    /* =====================================================================
+     OVERVIEW, "NEEDS YOUR ATTENTION" AND DETAIL SCREENS
      ===================================================================== */
-  rFilter = "attention";
-  let attReports = [];
+  const dg = (x) => String(x || "").replace(/\D/g, "");
+  const BACK = '<button class="act gray" data-a="back">← Back to Overview</button>';
 
-  const stat2 = (label, val, hint, k) =>
-    '<div class="card"' + (k ? ' data-a="drill" data-k="' + k + '"' : '') +
-    ' style="margin:0;padding:10px' + (k ? ';cursor:pointer' : '') + '">' +
-    '<div style="font-size:24px;font-weight:bold">' + esc(String(val)) + '</div>' +
-    '<div>' + esc(label) + (k ? ' ›' : '') + '</div>' +
-    (hint ? '<div class="mini">' + esc(hint) + '</div>' : '') + '</div>';
-
-  /* A small line above each room: is it visible in Find, and if not, why */
-  function liveInfo(r) {
-    const upd = r.updatedAt || r.createdAt;
-    const left = (upd && upd.toMillis) ? Math.ceil((upd.toMillis() + 30 * 86400000 - Date.now()) / 86400000) : 30;
-    let why = "";
-    if (apOf(r) !== "approved") why = "not approved yet";
-    else if (r.hidden) why = "hidden by admin";
-    else if (r.status === "rented") why = "marked as rented";
-    else if (left <= 0) why = "30 days are over (the owner must press Renew)";
-    else if (Number(r.reportCount || 0) >= 3) why = "3 or more reports";
-    return '<div style="margin:12px 0 -6px 0"><span class="tag ' + (why ? "bad" : "ok") + '">' +
-      (why ? "Not visible in Find: " + esc(why) : "✔ Visible in Find") + '</span></div>';
+  async function cnt(q) {
+    try { return (await getCountFromServer(q)).data().count; } catch (e) { return "?"; }
   }
 
-  const roomCard2 = (r, owner) => liveInfo(r) + roomCard(r, owner);
+  const stat = (label, val, hint) =>
+    '<div class="card" style="margin:0;padding:10px"><div style="font-size:24px;font-weight:bold">' + esc(String(val)) +
+    '</div><div>' + esc(label) + '</div>' + (hint ? '<div class="mini">' + esc(hint) + '</div>' : '') + '</div>';
+  const stat2 = (label, val, hint, k) =>
+    '<div class="card" data-a="drill" data-k="' + k + '" style="margin:0;padding:10px;cursor:pointer">' +
+    '<div style="font-size:24px;font-weight:bold">' + esc(String(val)) + '</div>' +
+    '<div>' + esc(label) + ' ›</div>' + (hint ? '<div class="mini">' + esc(hint) + '</div>' : '') + '</div>';
+  const grid = (arr) => '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">' + arr.join("") + '</div>';
+
+  /* the heavy photo limit (KB) is saved by you in Admin Settings */
+  async function loadSettings() {
+    try {
+      const s = await getDoc(doc(db, "settings", "app"));
+      const v = s.exists() ? Number(s.data().photoAlertKb) : 400;
+      if (isFinite(v) && v >= 50) photoKb = v;
+    } catch (e) {}
+  }
 
   async function loadAttReports() {
     try {
@@ -856,32 +504,97 @@ export function initAdmin(c) {
     }
   }
 
-  /* Shown at the top of Overview and refreshed live when rooms change */
+  async function loadAttChecks() {
+    try {
+      const snap = await getDocs(collection(db, "phoneChecks"));
+      attChecks = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((x) => x.status === "waiting");
+    } catch (e) {
+      attChecks = [];
+    }
+  }
+
+  /* accept or reject a WhatsApp phone check. Accepting also makes the person a Verified owner. */
+  async function pcAction(uid, ok) {
+    const s = await getDoc(doc(db, "phoneChecks", uid));
+    if (!s.exists() || s.data().status !== "waiting") { alert("No waiting phone check for this person."); return false; }
+    const d = s.data();
+    if (ok && !confirm("Accept +" + d.cc + " " + d.phone + "?\n\nAccept only if the WhatsApp message came from THIS number and shows the code " + d.code + ".")) return false;
+    const b = writeBatch(db);
+    b.update(doc(db, "phoneChecks", uid), { status: ok ? "verified" : "rejected", reviewedAt: serverTimestamp() });
+    if (ok) {
+      b.set(doc(db, "waPhone", uid), { phone: d.phone, cc: d.cc, at: serverTimestamp() });
+      b.set(doc(db, "verified", uid), { ok: true });
+    }
+    b.set(doc(collection(db, "adminLogs")), logDoc({
+      action: ok ? "phone_check_ok" : "phone_check_no", targetType: "user", targetId: uid, ownerId: uid,
+      reason: "+" + d.cc + " " + d.phone
+    }));
+    await b.commit();
+    return true;
+  }
+
+  /* shown at the top of Overview and refreshed live when rooms change */
   async function renderAttention() {
     const box = $("attBox");
     if (!box) return;
-    const todo = c.getRooms()
+    const rooms = c.getRooms();
+    const todo = rooms
       .filter((r) => { const a = apOf(r); return a === "pending" || a === "needs_review" || a === "none"; })
       .sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
-    const show = todo.slice(0, 5);
-    await Promise.all(show.map((r) => getUser(r.uid)));
+    const heavy = rooms.filter((r) => roomKb(r) > photoKb).sort((a, b) => roomKb(b) - roomKb(a));
+    const showTodo = todo.slice(0, 5);
+    const showHeavy = heavy.slice(0, 5);
+    await Promise.all(showTodo.concat(showHeavy).map((r) => getUser(r.uid)));
+    await Promise.all(attChecks.map((x) => getUser(x.uid)));
     if (!$("attBox")) return;
     const cntOf = (x) => todo.filter((r) => apOf(r) === x).length;
     let h = '<h3 class="title">Needs your attention</h3>';
-    if (!todo.length && !attReports.length) {
+    if (!todo.length && !attReports.length && !attChecks.length && !heavy.length) {
       h += '<div class="card" style="margin:0 0 12px 0"><p>✔ Nothing is waiting for you right now.</p></div>';
     }
+
+    if (attChecks.length) {
+      h += '<p class="mini" style="margin:0">Phone checks waiting: ' + attChecks.length + '</p>';
+      attChecks.forEach((x) => {
+        const u = uc[x.id];
+        h += '<div class="card" style="margin:8px 0"><p><b>' + esc(u ? (u.name || "-") : "(profile not found)") + '</b> asks for a phone check</p>' +
+          '<p>Number: <b>+' + esc(x.cc || "") + ' ' + esc(x.phone || "") + '</b></p>' +
+          '<p>Code: <b>' + esc(x.code || "") + '</b></p>' +
+          '<p class="mini">Open WhatsApp and see if the message came from this number with this code. Then press Accept.</p>' +
+          '<a class="call wa" href="https://wa.me/' + dg((x.cc || "") + (x.phone || "")) + '" target="_blank" rel="noopener">Open WhatsApp chat with this number</a>' +
+          '<button class="act" data-a="pcok" data-uid="' + esc(x.id) + '">Accept (number and code matched)</button>' +
+          '<button class="act gray" data-a="pcno" data-uid="' + esc(x.id) + '">Reject</button></div>';
+      });
+    }
+
+    if (heavy.length) {
+      h += '<p class="mini" style="margin:12px 0 0 0">Heavy photos (more than ' + photoKb + ' KB): ' + heavy.length + '</p>';
+      showHeavy.forEach((r) => {
+        const o = uc[r.uid];
+        const num = dg(o && o.phone ? o.phone : r.phone);
+        const cc = dg(o && o.phone ? (o.phoneCc || "91") : (r.cc || "91"));
+        h += '<div class="card" style="margin:8px 0"><p><b>' + esc(r.title || "") + '</b> ' + tag(roomKb(r) + " KB", "bad") + ' ' +
+          tag(AP_L[apOf(r)], AP_C[apOf(r)]) + '</p>' +
+          '<p class="mini">Owner: ' + esc(o ? (o.name || "-") : "(profile not found)") + (o && o.email ? " · " + esc(o.email) : "") + '</p>' +
+          '<p class="mini">Phone: ' + esc(num ? ("+" + cc + " " + num) : "not available") + '</p>' +
+          (num ? '<a class="call" href="tel:+' + esc(cc + num) + '">Call owner</a>' +
+            '<a class="call wa" href="https://wa.me/' + esc(cc + num) + '" target="_blank" rel="noopener">WhatsApp owner</a>' : '') +
+          photosOf(r) + roomButtons(r, "") + '</div>';
+      });
+    }
+
     if (todo.length) {
-      h += '<p class="mini" style="margin:0">Rooms waiting: ' + cntOf("pending") + ' pending · ' +
+      h += '<p class="mini" style="margin:12px 0 0 0">Rooms waiting: ' + cntOf("pending") + ' pending · ' +
         cntOf("needs_review") + ' needs review · ' + cntOf("none") + ' old (no status)</p>';
-      show.forEach((r) => { h += roomCard2(r, uc[r.uid]); });
-      if (todo.length > show.length) {
+      showTodo.forEach((r) => { h += roomCard2(r, uc[r.uid]); });
+      if (todo.length > showTodo.length) {
         h += '<button class="act gray" data-a="goto" data-tab="rooms" data-filter="attention">Show all ' + todo.length + ' rooms</button>';
       }
       if (cntOf("none") > 0) {
         h += '<button class="act" data-a="fixold">Approve all old rooms (' + cntOf("none") + ')</button>';
       }
     }
+
     if (attReports.length) {
       h += '<p class="mini" style="margin:12px 0 0 0">New reports: ' + attReports.length + '</p>';
       attReports.slice(0, 3).forEach((rep) => {
@@ -902,6 +615,7 @@ export function initAdmin(c) {
     const U = collection(db, "users");
     const E = collection(db, "events");
     const R = collection(db, "rooms");
+    await loadSettings();
     const v = await Promise.all([
       cnt(query(U)),
       cnt(query(U, where("createdAt", ">=", day0))),
@@ -917,7 +631,8 @@ export function initAdmin(c) {
       cnt(query(R, where("reportCount", ">=", 1))),
       cnt(query(collection(db, "roommates"))),
       cnt(query(collection(db, "reviews"))),
-      cnt(query(collection(db, "contacts")))
+      cnt(query(collection(db, "contacts"))),
+      cnt(query(collection(db, "messages")))
     ]);
     let l24 = 0, o24 = 0;
     try {
@@ -932,6 +647,7 @@ export function initAdmin(c) {
     } catch (e) {}
     await Promise.all(feed.map(async (e) => { await getUser(e.uid); if (e.roomId) await getRoom(e.roomId); }));
     await loadAttReports();
+    await loadAttChecks();
 
     const total = v[6];
     const sum = [v[7], v[8], v[9], v[10]].every((x) => typeof x === "number") ? v[7] + v[8] + v[9] + v[10] : null;
@@ -982,7 +698,8 @@ export function initAdmin(c) {
       grid([
         stat2("Roommate posts", v[12], "", "roommates"),
         stat2("Owner reviews", v[13], "", "reviews"),
-        stat2("Contact taps", v[14], "Call, WhatsApp or visit taps (one per person per room)", "contacts")
+        stat2("Contact taps", v[14], "Call, WhatsApp or visit taps (one per person per room)", "contacts"),
+        stat2("Messages to owners", v[15], "", "messages")
       ]) +
       '<h3 class="title" style="margin-top:16px">Download (CSV)</h3>' +
       '<div><button class="act" data-a="csv" data-kind="rooms">Rooms CSV</button>' +
@@ -993,9 +710,7 @@ export function initAdmin(c) {
     await renderAttention();
   }
 
-  /* ---------- DETAILS SCREENS (opened by tapping a number) ---------- */
-  const BACK = '<button class="act gray" data-a="back">← Back to Overview</button>';
-
+  /* ---------- DETAIL SCREENS (opened by tapping a number) ---------- */
   async function drill(k) {
     body().innerHTML = '<div class="empty">Loading...</div>';
     try {
@@ -1005,6 +720,7 @@ export function initAdmin(c) {
       else if (k === "reviews") await drillReviews();
       else if (k === "contacts") await drillContacts();
       else if (k === "roommates") await setTab("roommates");
+      else if (k === "messages") await setTab("settings");
     } catch (e) {
       body().innerHTML = BACK + '<div class="empty">Could not load. Check rules and admin setup.</div>';
     }
@@ -1113,36 +829,42 @@ export function initAdmin(c) {
     });
     body().innerHTML = h + (list.length ? '' : '<div class="empty">No contact taps yet.</div>');
   }
-
-  /* ---------- ROOM MANAGEMENT (v2: new element names, so they do not clash with Roommates) ---------- */
-  function roomMatches2(r, f) {
+    /* =====================================================================
+     ROOM MANAGEMENT
+     ===================================================================== */
+  function roomMatches(r, f) {
+    if (f === "all") return true;
     if (f === "attention") { const a = apOf(r); return a === "pending" || a === "needs_review" || a === "none"; }
-    return roomMatchesFilter(r, f);
+    if (f === "heavy") return roomKb(r) > photoKb;
+    if (f === "hidden") return r.hidden === true;
+    if (f === "reported") return Number(r.reportCount || 0) >= 1;
+    return apOf(r) === f;
   }
 
-  async function roomsTab2() {
+  async function roomsTab() {
     body().innerHTML = '<select id="admRoomFilter">' +
       '<option value="attention">Needs attention (pending, review, old)</option>' +
       '<option value="pending">Pending</option><option value="needs_review">Needs review</option>' +
       '<option value="approved">Approved</option><option value="rejected">Rejected</option>' +
+      '<option value="heavy">Heavy photos</option>' +
       '<option value="hidden">Hidden by admin</option><option value="reported">Reported (1+)</option>' +
       '<option value="none">Old rooms (no status)</option><option value="all">All rooms</option></select>' +
       '<input id="admRoomSearch" placeholder="Search title, area, owner name, email or ID">' +
       '<p id="admRoomSummary" class="mini"></p><div id="admRoomList"></div>';
     $("admRoomFilter").value = rFilter;
     $("admRoomSearch").value = rQuery;
-    $("admRoomFilter").addEventListener("change", () => { rFilter = $("admRoomFilter").value; renderRooms2(); });
-    $("admRoomSearch").addEventListener("input", () => { rQuery = $("admRoomSearch").value.trim().toLowerCase(); renderRooms2(); });
-    await renderRooms2();
+    $("admRoomFilter").addEventListener("change", () => { rFilter = $("admRoomFilter").value; renderRooms(); });
+    $("admRoomSearch").addEventListener("input", () => { rQuery = $("admRoomSearch").value.trim().toLowerCase(); renderRooms(); });
+    await renderRooms();
   }
 
-  async function renderRooms2() {
+  async function renderRooms() {
     const box = $("admRoomList");
     if (!box) return;
     const token = ++rmToken;
     const all = c.getRooms();
     const sorted = all.slice().sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
-    let list = sorted.filter((r) => roomMatches2(r, rFilter));
+    let list = sorted.filter((r) => roomMatches(r, rFilter));
     if (rQuery) {
       await Promise.all(list.map((r) => getUser(r.uid)));
       if (token !== rmToken) return;
@@ -1161,6 +883,338 @@ export function initAdmin(c) {
     shown.forEach((r) => { html += roomCard2(r, uc[r.uid]); });
     $("admRoomList").innerHTML = html || '<div class="empty">No rooms here.</div>';
   }
+
+  /* ---------- USER MANAGEMENT ---------- */
+  async function usersTab() {
+    body().innerHTML = '<input id="usSearch" placeholder="Search name, email, phone or ID">' +
+      '<p id="usSummary" class="mini"></p><div id="usList"><div class="empty">Loading...</div></div>';
+    $("usSearch").value = uQuery;
+    $("usSearch").addEventListener("input", () => { uQuery = $("usSearch").value.trim().toLowerCase(); renderUsers(); });
+    try {
+      const snap = await getDocs(query(collection(db, "users"), limit(500)));
+      usersAll = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      usersAll.sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
+      try {
+        const bs = await getDocs(collection(db, "blocked"));
+        blockedSet = new Set(bs.docs.map((d) => d.id));
+      } catch (e) {}
+      renderUsers();
+    } catch (e) {
+      if ($("usList")) $("usList").innerHTML = '<div class="empty">Could not load users. Check rules and admin setup.</div>';
+    }
+  }
+
+  function renderUsers() {
+    const box = $("usList");
+    if (!box) return;
+    const ver = c.getVerified();
+    const rooms = c.getRooms();
+    let list = usersAll;
+    if (uQuery) {
+      list = usersAll.filter((u) => [u.name, u.email, u.phone, u.id].join(" ").toLowerCase().indexOf(uQuery) !== -1);
+    }
+    $("usSummary").textContent = list.length + " users found" + (list.length > SHOW_MAX ? " (showing first " + SHOW_MAX + ")" : "") + " · " + usersAll.length + " loaded";
+    let html = "";
+    list.slice(0, SHOW_MAX).forEach((u) => {
+      const isV = ver.has(u.id);
+      const isB = blockedSet.has(u.id);
+      const rc2 = rooms.filter((r) => r.uid === u.id).length;
+      html += '<div class="card" style="margin:12px 0"><h3 style="padding-right:0">' + esc(u.name || "-") + '</h3>' +
+        (isB ? tag("Blocked", "bad") : "") +
+        (isV ? tag("✔ Verified owner", "ok") : "") +
+        (u.emailVerified === true ? tag("Email verified", "ok") : tag("Email not verified", "bad")) +
+        (u.phoneVerified === true ? tag("Phone verified", "ok") : tag("Phone not verified")) +
+        '<p class="mini">Email: ' + esc(u.email || "-") + '</p>' +
+        '<p class="mini">Phone: ' + esc(u.phone ? ("+" + (u.phoneCc || "") + " " + u.phone) : "-") + (u.hidePhone ? " (hidden on rooms)" : "") + '</p>' +
+        '<p class="mini">Rooms: ' + rc2 + ' · Favourites: ' + ((u.favs || []).length) + '</p>' +
+        '<p class="mini">Joined: ' + esc(fts(u.createdAt) || "-") + '</p>' +
+        '<p class="mini">Last active: ' + esc(fts(u.lastActive) || "-") + '</p>' +
+        '<p class="mini">User ID: ' + esc(u.id) + '</p>' +
+        '<div style="' + LINE + '">' +
+        (isV
+          ? '<button class="act gray" data-a="uunver" data-uid="' + esc(u.id) + '">Remove verified mark</button>'
+          : '<button class="act" data-a="uver" data-uid="' + esc(u.id) + '">Verify this owner</button>') +
+        (isB
+          ? '<button class="act" data-a="uunblock" data-uid="' + esc(u.id) + '">Unblock user</button>'
+          : (u.id === c.getUid() ? '' : '<button class="del" data-a="ublock" data-uid="' + esc(u.id) + '">Block user</button>')) +
+        '</div></div>';
+    });
+    box.innerHTML = html || '<div class="empty">No users found.</div>';
+  }
+
+  /* ---------- ROOMMATE POSTS ---------- */
+  async function roommatesTab() {
+    body().innerHTML = '<input id="rmaSearch" placeholder="Search name, city, phone or ID">' +
+      '<p id="rmaSummary" class="mini"></p><div id="rmaList"><div class="empty">Loading...</div></div>';
+    $("rmaSearch").value = rmaQuery;
+    $("rmaSearch").addEventListener("input", () => { rmaQuery = $("rmaSearch").value.trim().toLowerCase(); renderRmPosts(); });
+    try {
+      const snap = await getDocs(query(collection(db, "roommates"), limit(300)));
+      rmaAll = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      rmaAll.sort((a, b) => ms(b.updatedAt) - ms(a.updatedAt));
+      try {
+        const bs = await getDocs(collection(db, "blocked"));
+        blockedSet = new Set(bs.docs.map((d) => d.id));
+      } catch (e) {}
+      renderRmPosts();
+    } catch (e) {
+      if ($("rmaList")) $("rmaList").innerHTML = '<div class="empty">Could not load. Check rules and admin setup.</div>';
+    }
+  }
+
+  function renderRmPosts() {
+    const box = $("rmaList");
+    if (!box) return;
+    let list = rmaAll;
+    if (rmaQuery) {
+      list = rmaAll.filter((p) => [p.name, p.city, p.area, p.phone, p.id].join(" ").toLowerCase().indexOf(rmaQuery) !== -1);
+    }
+    $("rmaSummary").textContent = list.length + " posts found" + (list.length > SHOW_MAX ? " (showing first " + SHOW_MAX + ")" : "") + " · " + rmaAll.length + " loaded";
+    let html = "";
+    list.slice(0, SHOW_MAX).forEach((p) => {
+      html += '<div class="card" style="margin:12px 0"><h3 style="padding-right:0">' + esc(p.name || "-") + '</h3>' +
+        tag(p.kind === "haveRoom" ? "Has a room" : "Needs a room", p.kind === "haveRoom" ? "ok" : "new") +
+        tag(p.gender || "") +
+        (blockedSet.has(p.id) ? tag("Blocked", "bad") : "") +
+        '<p>' + esc(p.city || "") + (p.area ? ', ' + esc(p.area) : '') + ' · ' + esc(p.country || "") + '</p>' +
+        '<p>Budget: ' + esc(String(p.budget == null ? "" : p.budget)) + ' ' + esc(p.currency || "") + ' / month</p>' +
+        '<p class="mini">Wants: ' + esc(p.want || "") + ' · Food: ' + esc(p.diet || "") + ' · Smoking: ' + esc(p.smoking || "") +
+        ' · Work: ' + esc(p.work || "") + '</p>' +
+        (p.moveIn ? '<p class="mini">Move in: ' + esc(p.moveIn) + '</p>' : '') +
+        '<p class="mini">Phone: ' + esc(p.phone ? ("+" + (p.cc || "") + " " + p.phone) : "-") + '</p>' +
+        (p.about ? '<p>' + esc(p.about) + '</p>' : '') +
+        '<p class="mini">Updated: ' + esc(fts(p.updatedAt) || "-") + '</p>' +
+        '<p class="mini">User ID: ' + esc(p.id) + '</p>' +
+        '<div style="' + LINE + '">' +
+        '<button class="del" data-a="rmdel" data-uid="' + esc(p.id) + '">Remove this post</button>' +
+        (p.id === c.getUid() ? '' : '<button class="del" data-a="ublock" data-uid="' + esc(p.id) + '">Block this user</button>') +
+        '</div></div>';
+    });
+    box.innerHTML = html || '<div class="empty">No roommate posts here.</div>';
+  }
+
+  async function removeRoommatePost(uid) {
+    if (!confirm("Remove this roommate post? The person can post again later.")) return false;
+    const ans = prompt("Reason (optional, only admins see it):", "");
+    if (ans === null) return false;
+    const b = writeBatch(db);
+    b.delete(doc(db, "roommates", uid));
+    b.set(doc(collection(db, "adminLogs")), logDoc({
+      action: "roommate_remove", targetType: "roommate", targetId: uid, ownerId: uid, reason: ans.trim().slice(0, 300)
+    }));
+    await b.commit();
+    return true;
+  }
+
+  /* ---------- ROOM APPROVAL SETTINGS ---------- */
+  function approvalTab() {
+    const rooms = c.getRooms();
+    const n = { pending: 0, approved: 0, needs_review: 0, rejected: 0, none: 0 };
+    rooms.forEach((r) => { const a = apOf(r); if (a in n) n[a]++; });
+    body().innerHTML =
+      '<h3 class="title">Room approval</h3>' +
+      grid([
+        stat("Pending", n.pending),
+        stat("Needs review", n.needs_review),
+        stat("Approved", n.approved),
+        stat("Rejected", n.rejected),
+        stat("Old rooms (no status)", n.none)
+      ]) +
+      '<div class="card" style="margin:12px 0"><b>How rooms get approved</b>' +
+      '<p class="mini">Every new room starts as Pending.</p>' +
+      '<p class="mini">A room is approved automatically in these cases: (1) the owner is a Verified owner (you marked them), has a photo and a name. If you accepted a WhatsApp phone check for this owner, the room must show that checked number or hide it. (2) The owner verified a phone number by SMS code (needs Firebase billing, off for now).</p>' +
+      '<p class="mini">All other rooms wait here for you. Open Overview: they are shown at the top.</p>' +
+      '<p class="mini">A room with 3 or more reports hides itself automatically.</p></div>' +
+      '<div class="card" style="margin:12px 0"><b>Fix old rooms</b>' +
+      '<p class="mini">Rooms added before the approval system have no status and stay hidden from searches. This approves all of them in one step.</p>' +
+      (n.none > 0
+        ? '<button class="act" data-a="fixold">Fix old rooms (' + n.none + ')</button>'
+        : '<p class="mini">✔ No old rooms need fixing.</p>') +
+      '</div>' +
+      '<div><button class="act gray" data-a="goto" data-tab="rooms" data-filter="attention">Open rooms that need attention</button></div>';
+  }
+
+  async function fixOldRooms() {
+    const old = c.getRooms().filter((r) => apOf(r) === "none");
+    if (!old.length) { alert("No old rooms need fixing."); return; }
+    if (!confirm("Approve " + old.length + " old rooms? They will become visible to everyone.")) return;
+    for (let i = 0; i < old.length; i += 200) {
+      const part = old.slice(i, i + 200);
+      const b = writeBatch(db);
+      part.forEach((r) => {
+        b.update(doc(db, "rooms", r.id), {
+          approval: "approved", approvalBy: "legacy", approvalAt: serverTimestamp(),
+          approvalReason: "Old room approved by admin"
+        });
+      });
+      b.set(doc(collection(db, "adminLogs")), logDoc({
+        action: "fix_old_rooms", targetType: "rooms", targetId: "", reason: part.length + " old rooms approved"
+      }));
+      await b.commit();
+    }
+    alert(old.length + " old rooms approved.");
+  }
+
+  /* =====================================================================
+     ADMIN SETTINGS: photo alert limit, WhatsApp phone checks, messages
+     ===================================================================== */
+  function pcCardHtml(x, u) {
+    return '<div class="card" style="margin:8px 0"><p><b>' + esc(u ? (u.name || "-") : "(profile not found)") + '</b> asks for a phone check</p>' +
+      '<p>Number: <b>+' + esc(x.cc || "") + ' ' + esc(x.phone || "") + '</b></p>' +
+      '<p>Code: <b>' + esc(x.code || "") + '</b></p>' +
+      '<p class="mini">Open WhatsApp and see if the message came from this number with this code. Then press Accept.</p>' +
+      '<a class="call wa" href="https://wa.me/' + dg((x.cc || "") + (x.phone || "")) + '" target="_blank" rel="noopener">Open WhatsApp chat with this number</a>' +
+      '<button class="act" data-a="pcok" data-uid="' + esc(x.id) + '">Accept (number and code matched)</button>' +
+      '<button class="act gray" data-a="pcno" data-uid="' + esc(x.id) + '">Reject</button></div>';
+  }
+
+  async function settingsTab() {
+    body().innerHTML = '<div class="empty">Loading...</div>';
+    await loadSettings();
+    await loadAttChecks();
+    let wa = [];
+    try {
+      const s = await getDocs(collection(db, "waPhone"));
+      wa = s.docs.map((d) => ({ id: d.id, ...d.data() }));
+    } catch (e) {}
+    let msgList = [];
+    try {
+      const s = await getDocs(query(collection(db, "messages"), orderBy("createdAt", "desc"), limit(30)));
+      msgList = s.docs.map((d) => ({ id: d.id, ...d.data() }));
+    } catch (e) {}
+    await Promise.all(attChecks.map((x) => getUser(x.id)));
+    await Promise.all(wa.map((x) => getUser(x.id)));
+    await Promise.all(msgList.map((m) => getUser(m.ownerId)));
+    if (current !== "settings") return;
+
+    let h = '<h3 class="title">Photo alert</h3>' +
+      '<p class="mini">You get an alert (in Overview, under Needs your attention) when the photos of one room are bigger than this many KB. ' +
+      'A room can never be bigger than about 1000 KB in total, and a normal room is about 300 KB. Allowed: 50 to 900.</p>' +
+      '<input id="kbInput" type="number" min="50" max="900" value="' + photoKb + '">' +
+      '<button class="act" data-a="savekb">Save limit</button>';
+
+    h += '<h3 class="title" style="margin-top:16px">Phone checks (WhatsApp)</h3>' +
+      '<p class="mini">Free way to check that an owner\'s number is real. The owner sends a code to your WhatsApp number (written in app.js as SUPPORT_WA). ' +
+      'You check the sender and the code, then press Accept. Accepting also makes the person a Verified owner.</p>';
+    if (attChecks.length) {
+      attChecks.forEach((x) => { h += pcCardHtml(x, uc[x.id]); });
+    } else {
+      h += '<p class="mini">No phone check is waiting.</p>';
+    }
+    h += '<p class="mini" style="margin-top:10px"><b>Numbers you accepted: ' + wa.length + '</b></p>';
+    wa.forEach((x) => {
+      const u = uc[x.id];
+      h += '<div class="card" style="margin:8px 0"><b>' + esc(u ? (u.name || "-") : "(profile not found)") + '</b>' +
+        '<p class="mini">+' + esc(x.cc || "") + ' ' + esc(x.phone || "") + ' · ' + esc(fts(x.at)) + '</p>' +
+        '<p class="mini">ID: ' + esc(x.id) + '</p>' +
+        '<button class="act gray" data-a="uunver" data-uid="' + esc(x.id) + '">Remove verified mark and checked number</button></div>';
+    });
+
+    h += '<h3 class="title" style="margin-top:16px">Messages to owners (latest 30)</h3>' +
+      '<p class="mini">You can read these to keep the app safe. Delete spam or abuse.</p>';
+    if (!msgList.length) h += '<p class="mini">No messages yet.</p>';
+    msgList.forEach((m) => {
+      const room = c.getRooms().find((r) => r.id === m.roomId);
+      const owner = uc[m.ownerId];
+      h += '<div class="card" style="margin:8px 0"><p><b>' + esc(m.name || "-") + '</b> wrote to <b>' + esc(owner ? (owner.name || "-") : m.ownerId) + '</b></p>' +
+        '<p class="mini">Room: ' + esc(room ? (room.title || "-") : m.roomId) + '</p>' +
+        '<p style="white-space:pre-wrap">' + esc(m.text || "") + '</p>' +
+        '<p class="mini">Sender phone: +' + esc(m.cc || "") + ' ' + esc(m.phone || "") + ' · ' + esc(fts(m.createdAt)) + '</p>' +
+        '<button class="del" data-a="msgdel" data-id="' + esc(m.id) + '">Delete message</button></div>';
+    });
+    body().innerHTML = h;
+  }
+
+  async function saveKb() {
+    const n = Math.round(Number(($("kbInput").value || "").trim()));
+    if (!(n >= 50 && n <= 900)) { alert("Enter a number between 50 and 900."); return; }
+    const b = writeBatch(db);
+    b.set(doc(db, "settings", "app"), { photoAlertKb: n });
+    b.set(doc(collection(db, "adminLogs")), logDoc({
+      action: "settings_save", targetType: "settings", targetId: "app", reason: "photo alert " + n + " KB"
+    }));
+    await b.commit();
+    photoKb = n;
+    alert("Saved. You will be alerted when a room has photos bigger than " + n + " KB.");
+  }
+
+  async function deleteMessage(id) {
+    if (!confirm("Delete this message? The owner will no longer see it.")) return false;
+    const b = writeBatch(db);
+    b.delete(doc(db, "messages", id));
+    b.set(doc(collection(db, "adminLogs")), logDoc({
+      action: "message_remove", targetType: "message", targetId: id, reason: ""
+    }));
+    await b.commit();
+    return true;
+  }
+
+  /* ---------- SECURITY SETTINGS ---------- */
+  async function securityTab() {
+    body().innerHTML = '<div class="empty">Loading...</div>';
+    const ver = Array.from(c.getVerified());
+    await Promise.all(ver.map((id) => getUser(id)));
+    let vh = "";
+    ver.forEach((id) => {
+      const u = uc[id];
+      vh += '<div class="card" style="margin:8px 0"><b>' + esc(u ? (u.name || "-") : "(profile not found)") + '</b>' +
+        '<p class="mini">' + esc(u && u.email ? u.email : "") + '</p>' +
+        '<p class="mini">ID: ' + esc(id) + '</p>' +
+        '<button class="act gray" data-a="uunver" data-uid="' + esc(id) + '">Remove verified mark</button></div>';
+    });
+    if (current !== "security") return;
+    body().innerHTML =
+      '<h3 class="title">Verified owners</h3>' +
+      '<p class="mini">A verified mark means you checked this person yourself. Rooms of a verified owner are approved automatically. The owner gives you their ID from Settings.</p>' +
+      '<input id="vidInput" placeholder="Paste the owner ID here">' +
+      '<button class="act" data-a="vadd">Verify this owner ID</button>' +
+      '<div style="margin-top:10px">' + (vh || '<p class="mini">No verified owners yet.</p>') + '</div>' +
+      '<h3 class="title" style="margin-top:16px">Security notes</h3>' +
+      '<div class="card" style="margin:8px 0">' +
+      '<p class="mini">Admin access is decided by the Firebase rules: the logged-in email must be verified and must match the admin email and the admin ID written in the rules. Nothing in this page can change that.</p>' +
+      '<p class="mini">Every admin action is saved in Admin Activity History and cannot be edited or deleted.</p>' +
+      '<p class="mini">Keep your admin email password strong and never share it.</p></div>';
+  }
+
+  /* ---------- ADMIN PROFILE ---------- */
+  function profileTab() {
+    const p = c.getProfile() || {};
+    const u = auth.currentUser;
+    body().innerHTML =
+      '<h3 class="title">Admin profile</h3>' +
+      '<div class="card" style="margin:8px 0">' +
+      '<p>Name: ' + esc(p.name || "-") + '</p>' +
+      '<p class="mini">Email: ' + esc((u && u.email) || "-") + '</p>' +
+      '<p class="mini">Email verified: ' + ((u && u.emailVerified) ? "Yes" : "No") + '</p>' +
+      '<p class="mini">Admin ID: ' + esc(c.getUid()) + '</p></div>' +
+      '<button class="act" data-a="resetpw">Send password reset email</button>' +
+      '<button class="del" data-a="logout">Logout</button>' +
+      '<p class="mini" style="margin-top:12px">Admin always opens on Overview.</p>';
+  }
+
+  /* ---------- ADMIN ACTIVITY HISTORY ---------- */
+  async function activityTab() {
+    body().innerHTML = '<div class="empty">Loading...</div>';
+    try {
+      const snap = await getDocs(query(collection(db, "adminLogs"), orderBy("createdAt", "desc"), limit(100)));
+      let html = '<p class="mini">Latest 100 admin actions.</p>';
+      snap.docs.forEach((d) => {
+        const l = d.data();
+        const s = l.snapshot;
+        html += '<div class="card" style="margin:8px 0"><b>' + esc(LOG_L[l.action] || l.action || "") + '</b>' +
+          (s && s.title ? '<p>' + esc(s.title) + '</p>' : '') +
+          (l.reason ? '<p class="mini">Reason: ' + esc(l.reason) + '</p>' : '') +
+          '<p class="mini">By: ' + esc(l.adminEmail || l.adminId || "") + '</p>' +
+          (l.targetId ? '<p class="mini">Target ID: ' + esc(l.targetId) + '</p>' : '') +
+          '<p class="mini">' + esc(fts(l.createdAt)) + '</p></div>';
+      });
+      if (current !== "activity") return;
+      body().innerHTML = snap.empty ? '<div class="empty">No admin actions yet.</div>' : html;
+    } catch (e) {
+      body().innerHTML = '<div class="empty">Could not load. Check rules and admin setup.</div>';
+    }
+  }
+
   /* ---------- TABS AND CLICKS ---------- */
   async function load() {
     if (!c.isAdmin()) return;
@@ -1170,8 +1224,9 @@ export function initAdmin(c) {
       else if (current === "reports") await reportsTab();
       else if (current === "rooms") await roomsTab();
       else if (current === "users") await usersTab();
-      else if (current === "roommates") await roommatesTab2();
+      else if (current === "roommates") await roommatesTab();
       else if (current === "approval") approvalTab();
+      else if (current === "settings") await settingsTab();
       else if (current === "security") await securityTab();
       else if (current === "profile") profileTab();
       else if (current === "activity") await activityTab();
@@ -1198,7 +1253,7 @@ export function initAdmin(c) {
     try {
       if (a === "goto") {
         const t = g("data-tab");
-        if (t === "rooms") rFilter = g("data-filter") || "pending";
+        if (t === "rooms") rFilter = g("data-filter") || "attention";
         if (t === "reports") rpFilter = g("data-filter") || "new";
         await setTab(t);
       } else if (a === "drill") {
@@ -1213,13 +1268,14 @@ export function initAdmin(c) {
         await load();
       } else if (a === "uver") {
         await verifyUser(g("data-uid"), true);
-        alert("Owner verified.");
+        alert("Owner verified. Their rooms will be approved automatically.");
         if (current === "reports") await load();
         else if (current === "users") renderUsers();
       } else if (a === "uunver") {
-        if (confirm("Remove the verified mark from this owner?")) {
+        if (confirm("Remove the verified mark from this owner? Their checked WhatsApp number is removed too.")) {
           await verifyUser(g("data-uid"), false);
           if (current === "security") await securityTab();
+          else if (current === "settings") await settingsTab();
           else if (current === "users") renderUsers();
         }
       } else if (a === "ublock") {
@@ -1236,6 +1292,17 @@ export function initAdmin(c) {
         if (ok) await load();
       } else if (a === "csv") {
         await exportCsv(g("data-kind"));
+      } else if (a === "pcok" || a === "pcno") {
+        const ok = await pcAction(g("data-uid"), a === "pcok");
+        if (ok) {
+          alert(a === "pcok" ? "Phone check accepted. This person is now a Verified owner." : "Phone check rejected.");
+          await load();
+        }
+      } else if (a === "savekb") {
+        await saveKb();
+      } else if (a === "msgdel") {
+        const ok = await deleteMessage(g("data-id"));
+        if (ok) await settingsTab();
       } else if (a === "vadd") {
         const id = ($("vidInput").value || "").trim();
         if (!id) { alert("Paste the owner ID first."); }
@@ -1261,11 +1328,11 @@ export function initAdmin(c) {
 
   body().addEventListener("click", onClick);
 
-    return {
+  return {
     load,
     open() { return setTab("overview"); },
     onRooms() {
-      if (current === "rooms" && $("admRoomList")) renderRooms2();
+      if (current === "rooms" && $("admRoomList")) renderRooms();
       else if (current === "approval" && $("adminBody")) approvalTab();
       else if (current === "overview" && $("attBox")) renderAttention();
     }

@@ -203,6 +203,9 @@
         <label class="check"><input type="checkbox" class="edru" value="petsOk"><span data-i18n="ruPets"></span></label>
       </div>
       <textarea id="edDesc" maxlength="500" data-ph="descPh"></textarea>
+      <label class="lbl" data-i18n="edPhotosLbl"></label>
+      <input id="edPhotos" type="file" accept="image/*" multiple>
+      <div id="edPhotoPrev" class="phs"></div>
       <p class="hint" style="padding:0 0 10px 0" data-i18n="editNote"></p>
       <button id="edSave" data-i18n="editSave"></button>
       <button id="edCancel" class="gray" data-i18n="cancel"></button>
@@ -214,7 +217,32 @@
     <button id="bigClose" type="button" data-i18n="closeBtn"></button>
   </div>
 
-  <div id="homeView" class="box">
+  <div id="msgModal" class="modal">
+    <div class="modalbox">
+      <h3 class="title" data-i18n="msgTitle"></h3>
+      <p id="msgFor" class="hint" style="padding:0 0 8px 0"></p>
+      <textarea id="msgText" maxlength="200" data-ph="msgPh"></textarea>
+      <div id="msgCnt" class="cnt">0 / 200</div>
+      <label class="check">
+        <input type="checkbox" id="msgAgree">
+        <span data-i18n="msgConsent"></span>
+      </label>
+      <button id="msgSendBtn" type="button" data-i18n="msgSend"></button>
+      <button id="msgCancel" class="gray" type="button" data-i18n="cancel"></button>
+    </div>
+  </div>
+
+  <div id="tourModal" class="modal">
+    <div class="modalbox tourlist">
+      <h3 class="title" data-i18n="tourTitle"></h3>
+      <p data-i18n="tour1"></p>
+      <p data-i18n="tour2"></p>
+      <p data-i18n="tour3"></p>
+      <p data-i18n="tour4"></p>
+      <button id="tourBtn" type="button" data-i18n="tourBtn"></button>
+    </div>
+  </div>
+    <div id="homeView" class="box">
     <p id="hello" style="margin:0 0 14px 0;font-weight:bold"></p>
     <h3 class="title" data-i18n="homeAsk"></h3>
     <button id="goFind" class="bigbtn" type="button">
@@ -240,6 +268,21 @@
         <summary data-i18n="safeTitle"></summary>
         <div id="safeBody"></div>
       </details>
+
+      <p class="lbl" data-i18n="qLblType"></p>
+      <div class="chips" id="chipType">
+        <button type="button" class="chip" data-qt="" data-i18n="qAll"></button>
+        <button type="button" class="chip" data-qt="single" data-i18n="single"></button>
+        <button type="button" class="chip" data-qt="shared" data-i18n="shared"></button>
+        <button type="button" class="chip" data-qt="bhk" data-i18n="bhk"></button>
+      </div>
+      <p class="lbl" data-i18n="fwLabel"></p>
+      <div class="chips" id="chipFor">
+        <button type="button" class="chip" data-qf="" data-i18n="qAll"></button>
+        <button type="button" class="chip" data-qf="boys" data-i18n="qBoys"></button>
+        <button type="button" class="chip" data-qf="girls" data-i18n="qGirls"></button>
+        <button type="button" class="chip" data-qf="family" data-i18n="qFamily"></button>
+      </div>
 
       <input id="search" data-ph="searchPh">
       <button id="fToggle" class="gray" type="button"></button>
@@ -310,6 +353,7 @@
         </select>
       </div>
     </div>
+    <div id="sugBox"></div>
     <div id="list"></div>
   </div>
 
@@ -407,7 +451,7 @@
     <button id="backTools" class="gray backbtn" type="button">←</button>
     <h3 class="title" data-i18n="tlTitle"></h3>
     <p class="hint" style="padding:0 0 10px 0" data-i18n="tlInfo"></p>
-      <label class="lbl" data-i18n="tlRent"></label>
+    <label class="lbl" data-i18n="tlRent"></label>
     <input id="tcRent" type="number" inputmode="decimal" min="0">
     <label class="lbl" data-i18n="tlElec"></label>
     <input id="tcElec" type="number" inputmode="decimal" min="0">
@@ -432,6 +476,7 @@
 
   <div id="noticesView" class="box" style="display:none">
     <button id="backNotices" class="gray backbtn" type="button">←</button>
+    <div id="msgBox"></div>
     <div id="noticeList"></div>
   </div>
 
@@ -481,6 +526,14 @@
       <button id="pvConfirm" class="act" type="button" data-i18n="pvConfirm"></button>
     </div>
     <div id="pvCaptcha"></div>
+
+    <div class="wabox" id="waBox">
+      <b data-i18n="waTitle"></b>
+      <p class="mini" data-i18n="waInfo"></p>
+      <div id="waStatus"></div>
+      <button id="waBtn" class="act" type="button"></button>
+    </div>
+
     <label class="lbl" data-i18n="rowLang"></label>
     <select id="pfLang">
       <option value="en">English</option>
@@ -493,8 +546,7 @@
     <button id="pfPublic" class="gray" type="button" data-i18n="pfViewPublic"></button>
     <div id="pfInfo" class="tip"></div>
   </div>
-
-  <div id="ownerView" class="box" style="display:none">
+    <div id="ownerView" class="box" style="display:none">
     <button id="backOwner" class="gray backbtn" type="button">←</button>
     <div style="text-align:center">
       <div id="ovAvatar" class="avatar"></div>
@@ -522,7 +574,8 @@
     </div>
     <div id="ovReviews"></div>
   </div>
-    <div id="mineView" class="box" style="display:none">
+
+  <div id="mineView" class="box" style="display:none">
     <button id="backMine" class="gray backbtn" type="button">←</button>
     <div id="phoneNudge" class="tip" style="display:none">
       <span id="nudgeText"></span>
@@ -531,7 +584,8 @@
     <h3 class="title" data-i18n="addTitle"></h3>
     <input id="title" data-ph="roomName">
     <input id="area" data-ph="area">
-    <input id="city" data-ph="cityPh">
+    <input id="city" list="cityList" autocomplete="off" data-ph="cityPh">
+    <datalist id="cityList"></datalist>
     <select id="loc">
       <option value="highway" data-i18n="highway"></option>
       <option value="gali" data-i18n="gali"></option>
@@ -692,6 +746,7 @@
       <option value="users">User Management</option>
       <option value="roommates">Roommate Posts</option>
       <option value="approval">Room Approval Settings</option>
+      <option value="settings">Admin Settings (photo alert, phone checks)</option>
       <option value="security">Security Settings</option>
       <option value="profile">Admin Profile and Preferences</option>
       <option value="activity">Admin Activity History</option>
