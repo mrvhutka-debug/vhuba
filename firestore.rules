@@ -1,0 +1,505 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function verified() { return request.auth != null && request.auth.token.email_verified == true; }
+    function isAdmin() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email == 'mr.kailash280@gmail.com'
+        && request.auth.uid == 'FdrgobvPU9PsUcPj9admPSkjOPx1';
+    }
+    function notBlocked() {
+      return !exists(/databases/$(database)/documents/blocked/$(request.auth.uid));
+    }
+    function userName(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data.get('name', '');
+    }
+    function emailOk() {
+      return (!('email' in request.resource.data) || request.resource.data.email == request.auth.token.email)
+        && (!('emailVerified' in request.resource.data)
+            || request.resource.data.emailVerified == false
+            || request.auth.token.email_verified == true);
+    }
+    function phoneOk() {
+      return !('phoneVerified' in request.resource.data)
+        || request.resource.data.phoneVerified == false
+        || request.auth.token.get('phone_number', null) != null;
+    }
+    function pubOk() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['name', 'bio', 'photo', 'country', 'since', 'emailVerified', 'phoneVerified', 'updatedAt'])
+        && d.keys().hasAll(['name', 'bio', 'photo', 'country', 'since', 'emailVerified', 'phoneVerified', 'updatedAt'])
+        && d.name is string && d.name.size() >= 1 && d.name.size() <= 60
+        && d.bio is string && d.bio.size() <= 300
+        && d.photo is string && d.photo.size() <= 60000
+        && d.country in ['', 'IN', 'NP']
+        && d.updatedAt == request.time
+        && (d.emailVerified == false || request.auth.token.email_verified == true)
+        && (d.phoneVerified == false || request.auth.token.get('phone_number', null) != null);
+    }
+
+    /* ---------- users: only known fields, with types ---------- */
+    function userCreateOk() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['name', 'phone', 'phoneCc', 'phoneVerified', 'country', 'showCountry', 'email', 'emailVerified',
+                               'lang', 'accepted', 'hidePhone', 'favs', 'lastSeen', 'createdAt', 'lastActive', 'savedSearch', 'tourDone'])
+        && d.name is string && d.name.size() >= 1 && d.name.size() <= 150
+        && (!('phone' in d) || (d.phone is string && (d.phone == '' || d.phone.matches('[0-9]{10}'))))
+        && (!('phoneCc' in d) || d.phoneCc in ['91', '977'])
+        && (!('country' in d) || d.country in ['', 'IN', 'NP'])
+        && (!('lang' in d) || d.lang in ['', 'en', 'hi', 'ne'])
+        && (!('showCountry' in d) || d.showCountry is bool)
+        && (!('hidePhone' in d) || d.hidePhone is bool)
+        && (!('accepted' in d) || d.accepted is bool)
+        && (!('tourDone' in d) || d.tourDone is bool)
+        && (!('favs' in d) || (d.favs is list && d.favs.size() <= 200))
+        && (!('lastSeen' in d) || d.lastSeen is number)
+        && (!('savedSearch' in d) || d.savedSearch == null || d.savedSearch is map);
+    }
+    /* On update only the fields that change are checked, so older profiles keep working. */
+    function userUpdateOk() {
+      let d = request.resource.data;
+      let a = d.diff(resource.data).affectedKeys();
+      return a.hasOnly(['name', 'phone', 'phoneCc', 'phoneVerified', 'country', 'showCountry', 'email', 'emailVerified',
+                        'lang', 'accepted', 'hidePhone', 'favs', 'lastSeen', 'lastActive', 'savedSearch', 'tourDone'])
+        && (!a.hasAny(['name']) || (d.name is string && d.name.size() >= 1 && d.name.size() <= 150))
+        && (!a.hasAny(['phone']) || (d.phone is string && (d.phone == '' || d.phone.matches('[0-9]{10}'))))
+        && (!a.hasAny(['phoneCc']) || d.phoneCc in ['91', '977'])
+        && (!a.hasAny(['country']) || d.country in ['', 'IN', 'NP'])
+        && (!a.hasAny(['lang']) || d.lang in ['', 'en', 'hi', 'ne'])
+        && (!a.hasAny(['showCountry']) || d.showCountry is bool)
+        && (!a.hasAny(['hidePhone']) || d.hidePhone is bool)
+        && (!a.hasAny(['accepted']) || d.accepted is bool)
+        && (!a.hasAny(['tourDone']) || d.tourDone is bool)
+        && (!a.hasAny(['favs']) || (d.favs is list && d.favs.size() <= 200))
+        && (!a.hasAny(['lastSeen']) || d.lastSeen is number)
+        && (!a.hasAny(['savedSearch']) || d.savedSearch == null || d.savedSearch is map);
+    }
+
+    /* ---------- rooms ---------- */
+    function amenOk(v) {
+      return v is list && v.size() <= 9
+        && v.hasOnly(['wifi', 'ac', 'geyser', 'bath', 'parking', 'furnished', 'water', 'backup', 'kitchen']);
+    }
+    function houseRulesOk(v) {
+      return v is list && v.size() <= 3 && v.hasOnly(['vegOnly', 'noSmoking', 'petsOk']);
+    }
+
+    function roomCreateOk() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['title', 'area', 'city', 'loc', 'country', 'currency', 'price', 'deposit', 'extras',
+                               'ownerType', 'type', 'cc', 'phone', 'forWho', 'availFrom', 'amenities', 'rules',
+                               'status', 'reportCount', 'approval', 'approvalBy', 'approvalAt', 'uid', 'createdAt',
+                               'updatedAt', 'description', 'photos', 'lat', 'lng'])
+        && d.title is string && d.title.size() >= 1 && d.title.size() <= 120
+        && d.area is string && d.area.size() >= 1 && d.area.size() <= 120
+        && d.city is string && d.city.size() >= 1 && d.city.size() <= 60
+        && d.loc in ['highway', 'gali']
+        && d.type in ['single', 'shared', 'bhk']
+        && d.price is number && d.price > 0 && d.price <= 100000000
+        && d.deposit is number && d.deposit >= 0 && d.deposit <= 100000000
+        && d.extras in ['exIncl', 'exElec', 'exBoth', 'exOther']
+        && d.phone is string
+        && d.createdAt == request.time
+        && d.updatedAt == request.time
+        && (!('approvalAt' in d) || d.approvalAt == request.time)
+        && (!('lat' in d) || (d.lat is number && d.lat >= -90 && d.lat <= 90))
+        && (!('lng' in d) || (d.lng is number && d.lng >= -180 && d.lng <= 180))
+        && (!('photos' in d) || (d.photos is list && d.photos.size() <= 4))
+        && (!('description' in d) || (d.description is string && d.description.size() <= 500))
+        && (!('amenities' in d) || amenOk(d.amenities))
+        && (!('rules' in d) || houseRulesOk(d.rules))
+        && (!('forWho' in d) || d.forWho in ['any', 'boys', 'girls', 'family'])
+        && (!('availFrom' in d) || (d.availFrom is string && d.availFrom.size() <= 10));
+    }
+
+    /* An owner you verified yourself (verified collection): rooms are approved automatically.
+       If the owner was checked through WhatsApp (waPhone), the room must use that checked number (or hide it). */
+    function trustedOk() {
+      let d = request.resource.data;
+      return exists(/databases/$(database)/documents/verified/$(request.auth.uid))
+        && ('photos' in d) && d.photos.size() >= 1
+        && userName(request.auth.uid).size() >= 2
+        && (!exists(/databases/$(database)/documents/waPhone/$(request.auth.uid))
+            || d.phone == ''
+            || get(/databases/$(database)/documents/waPhone/$(request.auth.uid)).data.get('phone', '') == d.phone);
+    }
+
+    function phoneChangeOk() {
+      let d = request.resource.data;
+      let by = resource.data.get('approvalBy', '');
+      return !d.diff(resource.data).affectedKeys().hasAny(['phone', 'cc'])
+        || d.get('phone', '') == ''
+        || (by != 'auto' && by != 'trusted')
+        || (by == 'auto'
+            && request.auth.token.get('phone_number', null) == '+' + d.get('cc', '91') + d.get('phone', ''))
+        || (by == 'trusted'
+            && (!exists(/databases/$(database)/documents/waPhone/$(request.auth.uid))
+                || get(/databases/$(database)/documents/waPhone/$(request.auth.uid)).data.get('phone', '') == d.get('phone', '')));
+    }
+
+    function ownerEditOk() {
+      let d = request.resource.data;
+      let a = d.diff(resource.data).affectedKeys();
+      return (!a.hasAny(['title']) || (d.title is string && d.title.size() >= 1 && d.title.size() <= 120))
+        && (!a.hasAny(['area']) || (d.area is string && d.area.size() >= 1 && d.area.size() <= 120))
+        && (!a.hasAny(['city']) || (d.city is string && d.city.size() >= 1 && d.city.size() <= 60))
+        && (!a.hasAny(['loc']) || d.loc in ['highway', 'gali'])
+        && (!a.hasAny(['type']) || d.type in ['single', 'shared', 'bhk'])
+        && (!a.hasAny(['price']) || (d.price is number && d.price > 0 && d.price <= 100000000))
+        && (!a.hasAny(['deposit']) || (d.deposit is number && d.deposit >= 0 && d.deposit <= 100000000))
+        && (!a.hasAny(['extras']) || d.extras in ['exIncl', 'exElec', 'exBoth', 'exOther'])
+        && (!a.hasAny(['ownerType']) || d.ownerType in ['owner', 'broker'])
+        && (!a.hasAny(['description']) || (d.description is string && d.description.size() <= 500))
+        && (!a.hasAny(['amenities']) || amenOk(d.amenities))
+        && (!a.hasAny(['rules']) || houseRulesOk(d.rules))
+        && (!a.hasAny(['forWho']) || d.forWho in ['any', 'boys', 'girls', 'family'])
+        && (!a.hasAny(['availFrom']) || (d.availFrom is string && d.availFrom.size() <= 10))
+        && (!a.hasAny(['status']) || d.status in ['available', 'rented'])
+        && (!a.hasAny(['updatedAt']) || d.updatedAt == request.time)
+        && (!a.hasAny(['photos']) || (d.photos is list && d.photos.size() <= 4))
+        && (!a.hasAny(['photos'])
+            || resource.data.get('approvalBy', '') == 'trusted'
+            || (d.approval == 'pending' && d.approvalBy == 'system'))
+        && (!a.hasAny(['approval', 'approvalBy']) || (d.approval == 'pending' && d.approvalBy == 'system'));
+    }
+
+    /* ---------- roommate post ---------- */
+    function rmOk() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['uid', 'name', 'kind', 'gender', 'want', 'country', 'currency', 'budget', 'city', 'area',
+                               'diet', 'smoking', 'work', 'moveIn', 'about', 'cc', 'phone', 'createdAt', 'updatedAt'])
+        && d.keys().hasAll(['uid', 'name', 'kind', 'gender', 'want', 'country', 'currency', 'budget', 'city', 'area',
+                            'diet', 'smoking', 'work', 'moveIn', 'about', 'cc', 'phone', 'createdAt', 'updatedAt'])
+        && d.uid == request.auth.uid
+        && d.name is string && d.name.size() >= 1 && d.name.size() <= 60
+        && d.name == userName(request.auth.uid)
+        && d.kind in ['haveRoom', 'needRoom']
+        && d.gender in ['male', 'female', 'other']
+        && d.want in ['any', 'male', 'female']
+        && d.country in ['IN', 'NP']
+        && d.currency == (d.country == 'IN' ? 'INR' : 'NPR')
+        && d.budget is number && d.budget > 0
+        && d.city is string && d.city.size() >= 1 && d.city.size() <= 60
+        && d.area is string && d.area.size() <= 120
+        && d.diet in ['veg', 'nonveg', 'any']
+        && d.smoking in ['yes', 'no']
+        && d.work in ['student', 'working', 'other']
+        && d.moveIn is string && d.moveIn.size() <= 10
+        && d.about is string && d.about.size() <= 300
+        && d.cc in ['91', '977']
+        && d.phone is string && d.phone.matches('[0-9]{10}')
+        && d.updatedAt == request.time;
+    }
+
+    /* ---------- reviews ---------- */
+    function rvOk() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['ownerId', 'uid', 'name', 'rating', 'comment', 'createdAt'])
+        && d.keys().hasAll(['ownerId', 'uid', 'name', 'rating', 'comment', 'createdAt'])
+        && d.uid == request.auth.uid
+        && d.ownerId is string && d.ownerId != request.auth.uid
+        && d.name is string && d.name.size() >= 1 && d.name.size() <= 60
+        && d.name == userName(request.auth.uid)
+        && d.rating is int && d.rating >= 1 && d.rating <= 5
+        && d.comment is string && d.comment.size() <= 300;
+    }
+    /* contact records have the id  ownerId_roomNumber_reviewerId  (rooms are numbered 1 to 5) */
+    function contacted(ownerId) {
+      let u = request.auth.uid;
+      return exists(/databases/$(database)/documents/contacts/$(ownerId + '_1_' + u))
+        || exists(/databases/$(database)/documents/contacts/$(ownerId + '_2_' + u))
+        || exists(/databases/$(database)/documents/contacts/$(ownerId + '_3_' + u))
+        || exists(/databases/$(database)/documents/contacts/$(ownerId + '_4_' + u))
+        || exists(/databases/$(database)/documents/contacts/$(ownerId + '_5_' + u));
+    }
+
+    /* ---------- message to an owner who hides the phone ---------- */
+    function msgOk() {
+      let d = request.resource.data;
+      let r = get(/databases/$(database)/documents/rooms/$(d.roomId)).data;
+      return d.keys().hasOnly(['roomId', 'ownerId', 'uid', 'name', 'phone', 'cc', 'text', 'read', 'createdAt'])
+        && d.keys().hasAll(['roomId', 'ownerId', 'uid', 'name', 'phone', 'cc', 'text', 'read', 'createdAt'])
+        && d.roomId is string
+        && d.uid == request.auth.uid
+        && d.ownerId == r.uid
+        && d.ownerId != request.auth.uid
+        && r.get('phone', '') == ''
+        && r.get('approval', '') == 'approved'
+        && d.name is string && d.name.size() >= 1 && d.name.size() <= 60
+        && d.name == userName(request.auth.uid)
+        && d.phone is string && d.phone.matches('[0-9]{10}')
+        && d.cc in ['91', '977']
+        && d.text is string && d.text.size() >= 1 && d.text.size() <= 200
+        && d.read == false
+        && d.createdAt == request.time;
+    }
+
+    /* ---------- WhatsApp phone check request ---------- */
+    function pcOk() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['uid', 'phone', 'cc', 'code', 'status', 'createdAt'])
+        && d.keys().hasAll(['uid', 'phone', 'cc', 'code', 'status', 'createdAt'])
+        && d.uid == request.auth.uid
+        && d.phone is string && d.phone.matches('[0-9]{10}')
+        && d.cc in ['91', '977']
+        && d.code is string && d.code.matches('[0-9]{6}')
+        && d.status == 'waiting'
+        && d.createdAt == request.time;
+    }
+
+    match /rooms/{roomId} {
+      allow read: if signedIn() && (
+        isAdmin()
+        || resource.data.uid == request.auth.uid
+        || resource.data.get('approval', '') == 'approved'
+      );
+      allow create: if verified()
+        && notBlocked()
+        && roomId.matches(request.auth.uid + '_[1-5]')
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'available'
+        && request.resource.data.reportCount == 0
+        && request.resource.data.ownerType in ['owner', 'broker']
+        && request.resource.data.country in ['IN', 'NP']
+        && request.resource.data.currency == (request.resource.data.country == 'IN' ? 'INR' : 'NPR')
+        && request.resource.data.cc in ['91', '977']
+        && (request.resource.data.phone == '' || request.resource.data.phone.matches('[0-9]{10}'))
+        && roomCreateOk()
+        && (
+          ( request.resource.data.approval == 'pending'
+            && request.resource.data.approvalBy == 'system' )
+          ||
+          ( request.resource.data.approval == 'approved'
+            && request.resource.data.approvalBy == 'trusted'
+            && trustedOk() )
+          ||
+          ( request.resource.data.approval == 'approved'
+            && request.resource.data.approvalBy == 'auto'
+            && request.auth.token.get('phone_number', null) != null
+            && ( request.resource.data.phone == ''
+                 || request.auth.token.get('phone_number', null) == '+' + request.resource.data.cc + request.resource.data.phone )
+            && ('photos' in request.resource.data)
+            && request.resource.data.photos.size() >= 1
+            && userName(request.auth.uid).size() >= 2 )
+        );
+      allow update: if verified() && (
+        ( resource.data.uid == request.auth.uid
+          && notBlocked()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+               'status', 'updatedAt', 'phone', 'cc',
+               'title', 'area', 'city', 'loc', 'type', 'price', 'deposit', 'extras', 'ownerType', 'description',
+               'amenities', 'rules', 'forWho', 'availFrom', 'photos',
+               'approval', 'approvalBy'
+             ])
+          && ownerEditOk()
+          && request.resource.data.get('cc', '91') in ['91', '977']
+          && (request.resource.data.get('phone', '') == '' || request.resource.data.get('phone', '').matches('[0-9]{10}'))
+          && phoneChangeOk() )
+        ||
+        ( resource.data.uid != request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reportCount'])
+          && request.resource.data.reportCount == resource.data.get('reportCount', 0) + 1
+          && !exists(/databases/$(database)/documents/reports/$(roomId + '_' + request.auth.uid))
+          && existsAfter(/databases/$(database)/documents/reports/$(roomId + '_' + request.auth.uid)) )
+        || isAdmin()
+      );
+      allow delete: if signedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
+      allow create: if signedIn() && request.auth.uid == userId
+        && emailOk()
+        && phoneOk()
+        && userCreateOk()
+        && (!('createdAt' in request.resource.data) || request.resource.data.createdAt == request.time)
+        && (!('lastActive' in request.resource.data) || request.resource.data.lastActive == request.time);
+      allow update: if signedIn() && request.auth.uid == userId
+        && emailOk()
+        && phoneOk()
+        && request.resource.data.get('createdAt', null) == resource.data.get('createdAt', null)
+        && ( request.resource.data.get('lastActive', null) == resource.data.get('lastActive', null)
+             || request.resource.data.lastActive == request.time )
+        && userUpdateOk();
+      allow delete: if signedIn() && request.auth.uid == userId;
+    }
+
+    match /publicProfiles/{uid} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.auth.uid == uid
+        && pubOk()
+        && request.resource.data.since == request.time;
+      allow update: if signedIn() && request.auth.uid == uid
+        && pubOk()
+        && request.resource.data.since == resource.data.since;
+      allow delete: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /verified/{uid} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /blocked/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    match /events/{eid} {
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['type', 'uid', 'roomId', 'createdAt'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.type in ['signup', 'login', 'logout', 'room_added', 'room_reported']
+        && request.resource.data.createdAt == request.time
+        && (!('roomId' in request.resource.data) || request.resource.data.roomId is string);
+      allow read: if isAdmin();
+    }
+
+    match /notices/{nid} {
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(['toUid', 'kind', 'roomId', 'roomTitle', 'reason', 'read', 'createdAt'])
+        && request.resource.data.read == false
+        && request.resource.data.createdAt == request.time;
+      allow read: if signedIn() && (resource.data.toUid == request.auth.uid || isAdmin());
+      allow update: if signedIn() && resource.data.toUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read'])
+        && request.resource.data.read == true;
+             allow delete: if signedIn() &&
+      resource.data.toUid == request.auth.uid;
+    }
+
+    match /adminLogs/{lid} {
+      allow create: if isAdmin()
+        && request.resource.data.adminId == request.auth.uid
+        && request.resource.data.createdAt == request.time;
+      allow read: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    match /reports/{reportId} {
+      allow get: if isAdmin() || (signedIn() && (resource == null || resource.data.uid == request.auth.uid));
+      allow list: if isAdmin();
+      allow update, delete: if isAdmin();
+      allow create: if signedIn()
+        && notBlocked()
+        && request.resource.data.uid == request.auth.uid
+        && (
+          ( request.resource.data.type == 'problem'
+            && request.resource.data.keys().hasOnly(['type', 'text', 'uid', 'createdAt'])
+            && request.resource.data.text is string
+            && request.resource.data.text.size() >= 1
+            && request.resource.data.text.size() <= 1000
+            && request.resource.data.createdAt == request.time )
+          ||
+          ( verified()
+            && request.resource.data.type == 'room'
+            && request.resource.data.keys().hasOnly(['type', 'roomId', 'ownerId', 'uid', 'reason', 'details', 'status', 'createdAt'])
+            && reportId == request.resource.data.roomId + '_' + request.auth.uid
+            && request.resource.data.reason in ['fake_room', 'wrong_info', 'fake_photos', 'wrong_contact', 'suspicious', 'already_rented', 'broker_money', 'other']
+            && request.resource.data.details is string
+            && request.resource.data.details.size() <= 1000
+            && request.resource.data.status == 'new'
+            && request.resource.data.createdAt == request.time
+            && exists(/databases/$(database)/documents/rooms/$(request.resource.data.roomId))
+            && request.resource.data.ownerId == get(/databases/$(database)/documents/rooms/$(request.resource.data.roomId)).data.uid )
+        );
+    }
+
+    match /roommates/{uid} {
+      allow read: if signedIn();
+      allow create: if verified() && notBlocked()
+        && request.auth.uid == uid
+        && rmOk()
+        && request.resource.data.createdAt == request.time;
+      allow update: if verified() && notBlocked()
+        && request.auth.uid == uid
+        && resource.data.uid == request.auth.uid
+        && rmOk()
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if signedIn() && (request.auth.uid == uid || isAdmin());
+    }
+
+    match /reviews/{rid} {
+      allow read: if signedIn();
+      allow create: if verified() && notBlocked()
+        && rvOk()
+        && rid == request.resource.data.ownerId + '_' + request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && exists(/databases/$(database)/documents/users/$(request.resource.data.ownerId))
+        && contacted(request.resource.data.ownerId);
+      allow update: if verified() && notBlocked()
+        && resource.data.uid == request.auth.uid
+        && rvOk()
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if signedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+    }
+
+    match /contacts/{cid} {
+      allow read: if signedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if signedIn() && notBlocked()
+        && request.resource.data.keys().hasOnly(['roomId', 'ownerId', 'uid', 'createdAt'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.ownerId != request.auth.uid
+        && cid == request.resource.data.roomId + '_' + request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && exists(/databases/$(database)/documents/rooms/$(request.resource.data.roomId))
+        && request.resource.data.ownerId == get(/databases/$(database)/documents/rooms/$(request.resource.data.roomId)).data.uid;
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    /* message to an owner (document id = roomId_senderId, so one message per person per room) */
+    match /messages/{mid} {
+      allow read: if signedIn() && (resource.data.ownerId == request.auth.uid
+                                    || resource.data.uid == request.auth.uid
+                                    || isAdmin());
+      allow create: if verified() && notBlocked()
+        && mid == request.resource.data.roomId + '_' + request.auth.uid
+        && msgOk();
+      allow update: if signedIn() && resource.data.ownerId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read'])
+        && request.resource.data.read == true;
+      allow delete: if signedIn() && (resource.data.ownerId == request.auth.uid || isAdmin());
+    }
+
+    /* WhatsApp phone check: the owner asks, only the admin can approve */
+    match /phoneChecks/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow create: if verified() && notBlocked() && request.auth.uid == uid && pcOk();
+      allow update: if ( verified() && notBlocked() && request.auth.uid == uid && pcOk() )
+        || ( isAdmin()
+             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'reviewedAt'])
+             && request.resource.data.status in ['verified', 'rejected']
+             && request.resource.data.reviewedAt == request.time );
+      allow delete: if signedIn() && (request.auth.uid == uid || isAdmin());
+    }
+
+    /* the number the admin checked (private: only the owner and the admin can read it) */
+    match /waPhone/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasOnly(['phone', 'cc', 'at'])
+        && request.resource.data.phone is string
+        && request.resource.data.phone.matches('[0-9]{10}')
+        && request.resource.data.cc in ['91', '977']
+        && request.resource.data.at == request.time;
+      allow delete: if isAdmin();
+    }
+
+    /* admin settings (heavy photo alert limit in KB) */
+    match /settings/{sid} {
+      allow read: if isAdmin();
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasOnly(['photoAlertKb'])
+        && request.resource.data.photoAlertKb is number
+        && request.resource.data.photoAlertKb >= 50
+        && request.resource.data.photoAlertKb <= 900;
+      allow delete: if false;
+    }
+  }
+}
