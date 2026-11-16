@@ -21,7 +21,7 @@ import { initAdmin } from "./admin.js";
    Example: "9779812345678". Keep "" until you write it.
    SUPPORT_EMAIL: your support email. Keep "" to hide the button. */
 const SUPPORT_WA = "";
-const SUPPORT_EMAIL = "";
+const SUPPORT_EMAIL = "support.vhuba@gmail.com";
 const REQUIRE_PHONE_FOR_OWNERS = false;
 /* true only when Firebase billing and SMS verification are on */
 const SHOW_PHONE_VERIFY = false;
